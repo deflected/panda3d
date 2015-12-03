@@ -273,17 +273,18 @@ CPPExpression(CPPIdentifier *ident, CPPScope *current_scope,
       _u._variable = inst;
       return;
     }
-    CPPFunctionGroup *fgroup = decl->as_function_group();
+    // Actually, we can't scope function groups.
+    /*CPPFunctionGroup *fgroup = decl->as_function_group();
     if (fgroup != NULL) {
       _type = T_function;
       _u._fgroup = fgroup;
       return;
-    }
+    }*/
   }
 
   _type = T_unknown_ident;
   _u._ident = ident;
-  _u._ident->_native_scope = current_scope;
+  //_u._ident->_native_scope = current_scope;
 }
 
 ////////////////////////////////////////////////////////////////////
@@ -637,11 +638,11 @@ evaluate() const {
           (_u._op._op1->_type == T_string ||
            _u._op._op1->_type == T_u8string)) {
 
-        int index = r2.as_integer();
-        if (index == _u._op._op1->_str.size()) {
+        int index = (int)r2.as_integer();
+        if ((size_t)index == _u._op._op1->_str.size()) {
           return Result(0);
-        } else if (index >= 0 && index < _u._op._op1->_str.size()) {
-          return Result(_u._op._op1->_str[index]);
+        } else if (index >= 0 && (size_t)index < _u._op._op1->_str.size()) {
+          return Result(_u._op._op1->_str[(size_t)index]);
         } else {
           cerr << "array index " << index << " out of bounds of string literal "
                << *_u._op._op1 << "\n";
@@ -1467,9 +1468,8 @@ output(ostream &out, int indent_level, CPPScope *scope, bool) const {
       break;
 
     case 'f': // Function evaluation, no parameters.
-      out << "(";
       _u._op._op1->output(out, indent_level, scope, false);
-      out << "())";
+      out << "()";
       break;
 
     default:
@@ -1555,11 +1555,9 @@ output(ostream &out, int indent_level, CPPScope *scope, bool) const {
       break;
 
     case POINTSAT:
-      out << "(";
       _u._op._op1->output(out, indent_level, scope, false);
       out << "->";
       _u._op._op2->output(out, indent_level, scope, false);
-      out << ")";
       break;
 
     case '[': // Array element reference

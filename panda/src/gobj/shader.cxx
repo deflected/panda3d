@@ -430,7 +430,10 @@ cp_dependency(ShaderMatInput inp) {
       (inp == SMO_clip_x_to_view) ||
       (inp == SMO_view_to_clip_x) ||
       (inp == SMO_apiclip_x_to_view) ||
-      (inp == SMO_view_to_apiclip_x)) {
+      (inp == SMO_view_to_apiclip_x) ||
+      (inp == SMO_dlight_x) ||
+      (inp == SMO_plight_x) ||
+      (inp == SMO_slight_x)) {
     dep |= SSD_transform;
   }
   if ((inp == SMO_texpad_x) ||
@@ -1601,9 +1604,12 @@ cg_compile_entry_point(const char *entry, const ShaderCaps &caps,
   char version_arg[16];
   if (!cg_glsl_version.empty() && active != CG_PROFILE_UNKNOWN &&
       cgGetProfileProperty((CGprofile) active, CG_IS_GLSL_PROFILE)) {
-    snprintf(version_arg, 16, "version=%s", cg_glsl_version.c_str());
+
+    string version_arg("version=");
+    version_arg += cg_glsl_version;
+
     compiler_args[nargs++] = "-po";
-    compiler_args[nargs++] = version_arg;
+    compiler_args[nargs++] = version_arg.c_str();
   }
 
   compiler_args[nargs] = 0;
@@ -2041,10 +2047,10 @@ cg_compile_for(const ShaderCaps &caps, CGcontext context,
   combined_program = cgCombinePrograms(programs.size(), &programs[0]);
 
   // Build a parameter map.
-  int n_mat = (int)_mat_spec.size();
-  int n_tex = (int)_tex_spec.size();
-  int n_var = (int)_var_spec.size();
-  int n_ptr = (int)_ptr_spec.size();
+  size_t n_mat = _mat_spec.size();
+  size_t n_tex = _tex_spec.size();
+  size_t n_var = _var_spec.size();
+  size_t n_ptr = _ptr_spec.size();
 
   map.resize(n_mat + n_tex + n_var + n_ptr);
 
@@ -2057,12 +2063,20 @@ cg_compile_for(const ShaderCaps &caps, CGcontext context,
     programs_by_type[cgGetProgramDomain(program)] = program;
   }
 
-  for (int i = 0; i < n_mat; ++i) {
+  for (size_t i = 0; i < n_mat; ++i) {
     const ShaderArgId &id = _mat_spec[i]._id;
     map[id._seqno] = cgGetNamedParameter(programs_by_type[id._type], id._name.c_str());
+
+    if (shader_cat.is_debug()) {
+      const char *resource = cgGetParameterResourceName(map[id._seqno]);
+      if (resource != NULL) {
+        shader_cat.debug() << "Uniform parameter " << id._name
+                           << " is bound to resource " << resource << "\n";
+      }
+    }
   }
 
-  for (int i = 0; i < n_tex; ++i) {
+  for (size_t i = 0; i < n_tex; ++i) {
     const ShaderArgId &id = _tex_spec[i]._id;
     CGparameter p = cgGetNamedParameter(programs_by_type[id._type], id._name.c_str());
 
@@ -2076,7 +2090,7 @@ cg_compile_for(const ShaderCaps &caps, CGcontext context,
     map[id._seqno] = p;
   }
 
-  for (int i = 0; i < n_var; ++i) {
+  for (size_t i = 0; i < n_var; ++i) {
     const ShaderArgId &id = _var_spec[i]._id;
     CGparameter p = cgGetNamedParameter(programs_by_type[id._type], id._name.c_str());
 
@@ -2097,9 +2111,17 @@ cg_compile_for(const ShaderCaps &caps, CGcontext context,
     map[id._seqno] = p;
   }
 
-  for (int i = 0; i < n_ptr; ++i) {
+  for (size_t i = 0; i < n_ptr; ++i) {
     const ShaderArgId &id = _ptr_spec[i]._id;
     map[id._seqno] = cgGetNamedParameter(programs_by_type[id._type], id._name.c_str());
+
+    if (shader_cat.is_debug()) {
+      const char *resource = cgGetParameterResourceName(map[id._seqno]);
+      if (resource != NULL) {
+        shader_cat.debug() << "Uniform ptr parameter " << id._name
+                           << " is bound to resource " << resource << "\n";
+      }
+    }
   }
 
   // Transfer ownership of the compiled shader.

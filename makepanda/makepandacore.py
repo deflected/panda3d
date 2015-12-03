@@ -1,9 +1,5 @@
 ########################################################################
 ##
-## Caution: there are two separate, independent build systems:
-## 'makepanda', and 'ppremake'.  Use one or the other, do not attempt
-## to use both.  This file is part of the 'makepanda' system.
-##
 ## This file, makepandacore, contains all the global state and
 ## global functions for the makepanda system.
 ##
@@ -508,14 +504,14 @@ def oscmd(cmd, ignoreError = False):
         print(GetColor("blue") + cmd.split(" ", 1)[0] + " " + GetColor("magenta") + cmd.split(" ", 1)[1] + GetColor())
     sys.stdout.flush()
 
-    if sys.platform in ("win32", "cygwin"):
+    if sys.platform == "win32":
         exe = cmd.split()[0]
         exe_path = LocateBinary(exe)
         if exe_path is None:
             exit("Cannot find "+exe+" on search path")
         res = os.spawnl(os.P_WAIT, exe_path, cmd)
     else:
-        res = os.system(cmd)
+        res = subprocess.call(cmd, shell=True)
         sig = res & 0x7F
         if (GetVerbose() and res != 0):
             print(ColorText("red", "Process exited with exit status %d and signal code %d" % ((res & 0xFF00) >> 8, sig)))
@@ -539,7 +535,7 @@ def oscmd(cmd, ignoreError = False):
             if sys.platform == "win32":
                 os.spawnl(os.P_WAIT, exe_path, verbose_cmd)
             else:
-                os.system(verbose_cmd)
+                subprocess.call(verbose_cmd, shell=True)
         exit("The following command returned a non-zero value: " + str(cmd))
 
     return res
@@ -1710,6 +1706,18 @@ def SdkLocateDirectX( strMode = 'default' ):
                 SDK["DX9"] = dir.replace("\\", "/").rstrip("/")
                 SDK["GENERIC_DXERR_LIBRARY"] = 1;
         if ("DX9" not in SDK):
+            dir = "C:/Program Files (x86)/Microsoft DirectX SDK (June 2010)"
+            if os.path.isdir(dir):
+                print("Using DirectX SDK June 2010")
+                SDK["DX9"] = dir
+                SDK["GENERIC_DXERR_LIBRARY"] = 1
+        if ("DX9" not in SDK):
+            dir = "C:/Program Files/Microsoft DirectX SDK (June 2010)"
+            if os.path.isdir(dir):
+                print("Using DirectX SDK June 2010")
+                SDK["DX9"] = dir
+                SDK["GENERIC_DXERR_LIBRARY"] = 1
+        if ("DX9" not in SDK):
             dir = GetRegistryKey("SOFTWARE\\Wow6432Node\\Microsoft\\DirectX\\Microsoft DirectX SDK (August 2009)", "InstallPath")
             if (dir != 0):
                 print("Using DirectX SDK Aug 2009")
@@ -1743,21 +1751,32 @@ def SdkLocateDirectX( strMode = 'default' ):
                             SDK["DX9"] = dir.replace("\\", "/").rstrip("/")
         if ("DX9" not in SDK):
             return
+
     elif strMode == 'jun2010':
         if ("DX9" not in SDK):
             dir = GetRegistryKey("SOFTWARE\\Wow6432Node\\Microsoft\\DirectX\\Microsoft DirectX SDK (June 2010)", "InstallPath")
             if (dir != 0):
-                print("Found DirectX SDK June 2010")
                 SDK["DX9"] = dir.replace("\\", "/").rstrip("/")
                 SDK["GENERIC_DXERR_LIBRARY"] = 1;
         if ("DX9" not in SDK):
             dir = GetRegistryKey("SOFTWARE\\Microsoft\\DirectX\\Microsoft DirectX SDK (June 2010)", "InstallPath")
             if (dir != 0):
-                print("Found DirectX SDK June 2010")
                 SDK["DX9"] = dir.replace("\\", "/").rstrip("/")
                 SDK["GENERIC_DXERR_LIBRARY"] = 1;
         if ("DX9" not in SDK):
+            dir = "C:/Program Files (x86)/Microsoft DirectX SDK (June 2010)"
+            if os.path.isdir(dir):
+                SDK["DX9"] = dir
+                SDK["GENERIC_DXERR_LIBRARY"] = 1
+        if ("DX9" not in SDK):
+            dir = "C:/Program Files/Microsoft DirectX SDK (June 2010)"
+            if os.path.isdir(dir):
+                SDK["DX9"] = dir
+                SDK["GENERIC_DXERR_LIBRARY"] = 1
+        if ("DX9" not in SDK):
             exit("Couldn't find DirectX June2010 SDK")
+        else:
+            print("Found DirectX SDK June 2010")
     elif strMode == 'aug2009':
         if ("DX9" not in SDK):
             dir = GetRegistryKey("SOFTWARE\\Wow6432Node\\Microsoft\\DirectX\\Microsoft DirectX SDK (August 2009)", "InstallPath")
@@ -1862,7 +1881,7 @@ def SdkLocatePython(prefer_thirdparty_python=False):
             sdkdir += "-x64"
 
         SDK["PYTHON"] = sdkdir
-        SDK["PYTHONEXEC"] = SDK["PYTHON"].replace('/', '\\') + "\\python"
+        SDK["PYTHONEXEC"] = SDK["PYTHON"].replace('\\', '/') + "/python"
         if (GetOptimize() <= 2):
             SDK["PYTHONEXEC"] += "_d.exe"
         else:
@@ -1964,7 +1983,7 @@ def SdkLocateVisualStudio(version=10):
     elif (os.path.isfile("C:\\Program Files\\Microsoft Visual Studio %s\\VC\\bin\\cl.exe" % (version))):
         SDK["VISUALSTUDIO"] = "C:\\Program Files\\Microsoft Visual Studio %s\\" % (version)
 
-    elif (os.path.isfile("C:\\Program Files (x86)\\Microsoft Visual Studio %s\\VC\\bin\\cl.exe")):
+    elif (os.path.isfile("C:\\Program Files (x86)\\Microsoft Visual Studio %s\\VC\\bin\\cl.exe" % (version))):
         SDK["VISUALSTUDIO"] = "C:\\Program Files (x86)\\Microsoft Visual Studio %s\\" % (version)
 
     elif "VCINSTALLDIR" in os.environ:
@@ -2219,7 +2238,11 @@ def SdkAutoDisableSpeedTree():
 
 def AddToPathEnv(path,add):
     if path in os.environ:
-        os.environ[path] = add + os.pathsep + os.environ[path]
+        if sys.platform == 'cygwin' and path != "PATH":
+            # INCLUDE, LIB, etc. must remain in Windows-style in cygwin.
+            os.environ[path] = add + ';' + os.environ[path]
+        else:
+            os.environ[path] = add + os.pathsep + os.environ[path]
     else:
         os.environ[path] = add
 
@@ -2487,7 +2510,7 @@ def SetupBuildEnvironment(compiler):
         return
 
     # Add our output directories to the environment.
-    builtdir = os.path.join(os.path.abspath(GetOutputDir()))
+    builtdir = GetOutputDir()
     AddToPathEnv("PYTHONPATH", builtdir)
     AddToPathEnv("PANDA_PRC_DIR", os.path.join(builtdir, "etc"))
     AddToPathEnv("PATH", os.path.join(builtdir, "bin"))
@@ -2523,6 +2546,10 @@ def SetupBuildEnvironment(compiler):
             dyldpath.insert(0, os.path.join(builtdir, 'lib'))
             os.environ["DYLD_LIBRARY_PATH"] = os.pathsep.join(dyldpath)
 
+            # OS X 10.11 removed DYLD_LIBRARY_PATH, but we still need to pass
+            # on our lib directory to ppackage, so add it to PATH instead.
+            os.environ["PATH"] = os.path.join(builtdir, 'lib') + ':' + os.environ.get("PATH", "")
+
         # Workaround around compile issue on PCBSD
         if (os.path.exists("/usr/PCBSD")):
             os.environ["LD_LIBRARY_PATH"] += os.pathsep + "/usr/PCBSD/local/lib"
@@ -2535,22 +2562,24 @@ def SetupBuildEnvironment(compiler):
 
 def CopyFile(dstfile, srcfile):
     if dstfile[-1] == '/':
-        dstdir = dstfile
-        fnl = srcfile.rfind("/")
-        if fnl < 0:
-            fn = srcfile
-        else:
-            fn = srcfile[fnl+1:]
-        dstfile = dstdir + fn
+        dstfile += os.path.basename(srcfile)
 
     if NeedsBuild([dstfile], [srcfile]):
         if os.path.islink(srcfile):
             # Preserve symlinks
-            if os.path.exists(dstfile):
+            if os.path.isfile(dstfile) or os.path.islink(dstfile):
+                print("Removing file %s" % (dstfile))
                 os.unlink(dstfile)
+            elif os.path.isdir(dstfile):
+                print("Removing directory %s" % (dstfile))
+                shutil.rmtree(dstfile)
             os.symlink(os.readlink(srcfile), dstfile)
         else:
             WriteBinaryFile(dstfile, ReadBinaryFile(srcfile))
+
+        if sys.platform == 'cygwin' and os.path.splitext(dstfile)[1].lower() in ('.dll', '.exe'):
+            os.chmod(dstfile, 0o755)
+
         JustBuilt([dstfile], [srcfile])
 
 def CopyAllFiles(dstdir, srcdir, suffix=""):
@@ -2574,22 +2603,37 @@ def CopyAllJavaSources(dir, skip=[]):
             JustBuilt([dstfile], [srcfile])
 
 def CopyTree(dstdir, srcdir, omitVCS=True):
-    if (os.path.isdir(dstdir)):
-        for entry in os.listdir(srcdir):
+    if os.path.isdir(dstdir):
+        source_entries = os.listdir(srcdir)
+        for entry in source_entries:
             srcpth = os.path.join(srcdir, entry)
             dstpth = os.path.join(dstdir, entry)
-            if (os.path.isfile(srcpth)):
+
+            if os.path.islink(srcpth) or os.path.isfile(srcpth):
                 if not omitVCS or entry not in VCS_FILES:
                     CopyFile(dstpth, srcpth)
             else:
                 if not omitVCS or entry not in VCS_DIRS:
                     CopyTree(dstpth, srcpth)
+
+        # Delete files in dstdir that are not in srcdir.
+        for entry in os.listdir(dstdir):
+            if entry not in source_entries:
+                path = os.path.join(dstdir, entry)
+                if os.path.islink(path) or os.path.isfile(path):
+                    os.remove(path)
+                elif os.path.isdir(path):
+                    shutil.rmtree(path)
     else:
-        if sys.platform == 'win32':
+        if GetHost() == 'windows':
+            srcdir = srcdir.replace('/', '\\')
+            dstdir = dstdir.replace('/', '\\')
             cmd = 'xcopy /I/Y/E/Q "' + srcdir + '" "' + dstdir + '"'
+            oscmd(cmd)
         else:
-            cmd = 'cp -R -f ' + srcdir + ' ' + dstdir
-        oscmd(cmd)
+            if subprocess.call(['cp', '-R', '-f', srcdir, dstdir]) != 0:
+                exit("Copy failed.")
+
         if omitVCS:
             DeleteVCS(dstdir)
 
@@ -2801,6 +2845,7 @@ def CalcLocation(fn, ipath):
         if (fn.endswith(".dle")):   return OUTPUTDIR+"/plugins/"+fn[:-4]+dllext+".dle"
         if (fn.endswith(".plugin")):return OUTPUTDIR+"/plugins/"+fn[:-7]+dllext+".dll"
         if (fn.endswith(".exe")):   return OUTPUTDIR+"/bin/"+fn
+        if (fn.endswith(".p3d")):   return OUTPUTDIR+"/bin/"+fn
         if (fn.endswith(".lib")):   return OUTPUTDIR+"/lib/"+fn[:-4]+dllext+".lib"
         if (fn.endswith(".ilb")):   return OUTPUTDIR+"/tmp/"+fn[:-4]+dllext+".lib"
     elif (target == 'darwin'):
@@ -2812,6 +2857,7 @@ def CalcLocation(fn, ipath):
         if (fn.endswith(".pyd")):   return OUTPUTDIR+"/panda3d/"+fn[:-4]+".so"
         if (fn.endswith(".mll")):   return OUTPUTDIR+"/plugins/"+fn
         if (fn.endswith(".exe")):   return OUTPUTDIR+"/bin/"+fn[:-4]
+        if (fn.endswith(".p3d")):   return OUTPUTDIR+"/bin/"+fn[:-4]
         if (fn.endswith(".lib")):   return OUTPUTDIR+"/lib/"+fn[:-4]+".a"
         if (fn.endswith(".ilb")):   return OUTPUTDIR+"/tmp/"+fn[:-4]+".a"
         if (fn.endswith(".rsrc")):  return OUTPUTDIR+"/tmp/"+fn
@@ -2834,6 +2880,7 @@ def CalcLocation(fn, ipath):
         if (fn.endswith(".mll")):   return OUTPUTDIR+"/plugins/"+fn
         if (fn.endswith(".plugin")):return OUTPUTDIR+"/plugins/"+fn[:-7]+dllext+".so"
         if (fn.endswith(".exe")):   return OUTPUTDIR+"/bin/"+fn[:-4]
+        if (fn.endswith(".p3d")):   return OUTPUTDIR+"/bin/"+fn[:-4]
         if (fn.endswith(".lib")):   return OUTPUTDIR+"/lib/"+fn[:-4]+".a"
         if (fn.endswith(".ilb")):   return OUTPUTDIR+"/tmp/"+fn[:-4]+".a"
     if (fn.endswith(".dat")):   return OUTPUTDIR+"/tmp/"+fn

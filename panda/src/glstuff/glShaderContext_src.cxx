@@ -1513,7 +1513,7 @@ get_sampler_texture_type(int &out, GLenum param_type) {
 ////////////////////////////////////////////////////////////////////
 CLP(ShaderContext)::
 ~CLP(ShaderContext)() {
-  release_resources();
+  // Don't call release_resources; we may not have an active context.
 }
 
 ////////////////////////////////////////////////////////////////////
@@ -1613,43 +1613,44 @@ set_state_and_transform(const RenderState *target_rs,
     altered |= Shader::SSD_projection;
   }
 
-  if (_state_rs != target_rs) {
-    if (_state_rs == NULL) {
-      // We haven't set any state yet.
-      altered |= Shader::SSD_general;
-    } else {
-      if (_state_rs->get_attrib(ColorAttrib::get_class_slot()) !=
-          target_rs->get_attrib(ColorAttrib::get_class_slot())) {
-        altered |= Shader::SSD_color;
-      }
-      if (_state_rs->get_attrib(ColorScaleAttrib::get_class_slot()) !=
-          target_rs->get_attrib(ColorScaleAttrib::get_class_slot())) {
-        altered |= Shader::SSD_colorscale;
-      }
-      if (_state_rs->get_attrib(MaterialAttrib::get_class_slot()) !=
-          target_rs->get_attrib(MaterialAttrib::get_class_slot())) {
-        altered |= Shader::SSD_material;
-      }
-      if (_state_rs->get_attrib(ShaderAttrib::get_class_slot()) !=
-          target_rs->get_attrib(ShaderAttrib::get_class_slot())) {
-        altered |= Shader::SSD_shaderinputs;
-      }
-      if (_state_rs->get_attrib(FogAttrib::get_class_slot()) !=
-          target_rs->get_attrib(FogAttrib::get_class_slot())) {
-        altered |= Shader::SSD_fog;
-      }
-      if (_state_rs->get_attrib(LightAttrib::get_class_slot()) !=
-          target_rs->get_attrib(LightAttrib::get_class_slot())) {
-        altered |= Shader::SSD_light;
-      }
-      if (_state_rs->get_attrib(ClipPlaneAttrib::get_class_slot()) !=
-          target_rs->get_attrib(ClipPlaneAttrib::get_class_slot())) {
-        altered |= Shader::SSD_clip_planes;
-      }
-      if (_state_rs->get_attrib(TexMatrixAttrib::get_class_slot()) !=
-          target_rs->get_attrib(TexMatrixAttrib::get_class_slot())) {
-        altered |= Shader::SSD_tex_matrix;
-      }
+  if (_state_rs.was_deleted() || _state_rs == (const RenderState *)NULL) {
+    // Reset all of the state.
+    altered |= Shader::SSD_general;
+    _state_rs = target_rs;
+
+  } else if (_state_rs != target_rs) {
+    // The state has changed since last time.
+    if (_state_rs->get_attrib(ColorAttrib::get_class_slot()) !=
+        target_rs->get_attrib(ColorAttrib::get_class_slot())) {
+      altered |= Shader::SSD_color;
+    }
+    if (_state_rs->get_attrib(ColorScaleAttrib::get_class_slot()) !=
+        target_rs->get_attrib(ColorScaleAttrib::get_class_slot())) {
+      altered |= Shader::SSD_colorscale;
+    }
+    if (_state_rs->get_attrib(MaterialAttrib::get_class_slot()) !=
+        target_rs->get_attrib(MaterialAttrib::get_class_slot())) {
+      altered |= Shader::SSD_material;
+    }
+    if (_state_rs->get_attrib(ShaderAttrib::get_class_slot()) !=
+        target_rs->get_attrib(ShaderAttrib::get_class_slot())) {
+      altered |= Shader::SSD_shaderinputs;
+    }
+    if (_state_rs->get_attrib(FogAttrib::get_class_slot()) !=
+        target_rs->get_attrib(FogAttrib::get_class_slot())) {
+      altered |= Shader::SSD_fog;
+    }
+    if (_state_rs->get_attrib(LightAttrib::get_class_slot()) !=
+        target_rs->get_attrib(LightAttrib::get_class_slot())) {
+      altered |= Shader::SSD_light;
+    }
+    if (_state_rs->get_attrib(ClipPlaneAttrib::get_class_slot()) !=
+        target_rs->get_attrib(ClipPlaneAttrib::get_class_slot())) {
+      altered |= Shader::SSD_clip_planes;
+    }
+    if (_state_rs->get_attrib(TexMatrixAttrib::get_class_slot()) !=
+        target_rs->get_attrib(TexMatrixAttrib::get_class_slot())) {
+      altered |= Shader::SSD_tex_matrix;
     }
     _state_rs = target_rs;
   }
@@ -2479,6 +2480,15 @@ glsl_report_program_errors(GLuint program, bool fatal) {
 ////////////////////////////////////////////////////////////////////
 bool CLP(ShaderContext)::
 glsl_compile_shader(Shader::ShaderType type) {
+  static const char *types[] = {"", "vertex ", "fragment ", "geometry ",
+      "tessellation control ", "tessellation evaluation ", "compute ", ""};
+
+  if (GLCAT.is_debug()) {
+    GLCAT.debug()
+      << "Compiling GLSL " << types[type] << "shader "
+      << _shader->get_filename(type) << "\n";
+  }
+
   GLuint handle = 0;
   switch (type) {
     case Shader::ST_vertex:
@@ -2514,7 +2524,7 @@ glsl_compile_shader(Shader::ShaderType type) {
   }
   if (!handle) {
     GLCAT.error()
-      << "Could not create a GLSL shader of the requested type.\n";
+      << "Could not create a GLSL " << types[type] << "shader.\n";
     _glgsg->report_my_gl_errors();
     return false;
   }
@@ -2533,8 +2543,8 @@ glsl_compile_shader(Shader::ShaderType type) {
 
   if (status != GL_TRUE) {
     GLCAT.error()
-      << "An error occurred while compiling GLSL shader "
-      << _shader->get_filename(type) << ":\n";
+      << "An error occurred while compiling GLSL " << types[type]
+      << "shader " << _shader->get_filename(type) << ":\n";
     glsl_report_shader_errors(handle, type, true);
     _glgsg->_glDeleteShader(handle);
     _glgsg->report_my_gl_errors();
@@ -2629,12 +2639,18 @@ glsl_compile_and_link() {
   }
 #endif
 
+  if (GLCAT.is_debug()) {
+    GLCAT.debug()
+      << "Linking GLSL shader " << _shader->get_filename() << "\n";
+  }
+
   _glgsg->_glLinkProgram(_glsl_program);
 
   GLint status;
   _glgsg->_glGetProgramiv(_glsl_program, GL_LINK_STATUS, &status);
   if (status != GL_TRUE) {
-    GLCAT.error() << "An error occurred while linking GLSL shader program!\n";
+    GLCAT.error() << "An error occurred while linking GLSL shader "
+                  << _shader->get_filename() << "\n";
     glsl_report_program_errors(_glsl_program, true);
     return false;
   }

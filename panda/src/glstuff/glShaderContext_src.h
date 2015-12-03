@@ -69,7 +69,7 @@ private:
   typedef pvector<GLuint> GLSLShaders;
   GLSLShaders _glsl_shaders;
 
-  CPT(RenderState) _state_rs;
+  WCPT(RenderState) _state_rs;
   CPT(TransformState) _modelview_transform;
   CPT(TransformState) _projection_transform;
 
@@ -116,9 +116,9 @@ public:
     return _type_handle;
   }
   static void init_type() {
-    TypedObject::init_type();
+    ShaderContext::init_type();
     register_type(_type_handle, CLASSPREFIX_QUOTED "ShaderContext",
-                  TypedObject::get_class_type());
+                  ShaderContext::get_class_type());
   }
   virtual TypeHandle get_type() const {
     return get_class_type();

@@ -108,7 +108,7 @@ CLP(CgShaderContext)(CLP(GraphicsStateGuardian) *glgsg, Shader *s) : ShaderConte
     }
   }
 
-  if (_cg_program != 0) {
+  if (_cg_program != 0 && _glgsg->_supports_glsl) {
     if (cgGetProgramProfile(_cg_program) == CG_PROFILE_GLSLC) {
       _glsl_program = cgGLGetProgramID(_cg_program);
 
@@ -132,12 +132,14 @@ CLP(CgShaderContext)(CLP(GraphicsStateGuardian) *glgsg, Shader *s) : ShaderConte
   //
   // We use positive indices to indicate generic vertex attributes, and negative
   // indices to indicate conventional vertex attributes (ie. glVertexPointer).
-  int nvarying = _shader->_var_spec.size();
-  for (int i = 0; i < nvarying; ++i) {
-    Shader::ShaderVarSpec &bind = _shader->_var_spec[i];
+  size_t nvarying = _shader->_var_spec.size();
+  _attributes.resize(nvarying);
+
+  for (size_t i = 0; i < nvarying; ++i) {
+    const Shader::ShaderVarSpec &bind = _shader->_var_spec[i];
     CGparameter p = _cg_parameter_map[i];
     if (p == 0) {
-      bind._id._seqno = CA_unknown;
+      _attributes[i] = CA_unknown;
       continue;
     }
 
@@ -312,8 +314,7 @@ CLP(CgShaderContext)(CLP(GraphicsStateGuardian) *glgsg, Shader *s) : ShaderConte
     }
 #endif
 
-    // Abuse the seqno field to store the GLSL attribute location.
-    bind._id._seqno = loc;
+    _attributes[i] = loc;
   }
 
   _glgsg->report_my_gl_errors();
@@ -326,7 +327,7 @@ CLP(CgShaderContext)(CLP(GraphicsStateGuardian) *glgsg, Shader *s) : ShaderConte
 ////////////////////////////////////////////////////////////////////
 CLP(CgShaderContext)::
 ~CLP(CgShaderContext)() {
-  release_resources();
+  // Don't call release_resources; we may not have an active context.
 }
 
 ////////////////////////////////////////////////////////////////////
@@ -423,43 +424,44 @@ set_state_and_transform(const RenderState *target_rs,
     altered |= Shader::SSD_projection;
   }
 
-  if (_state_rs != target_rs) {
-    if (_state_rs == NULL) {
-      // We haven't set any state yet.
-      altered |= Shader::SSD_general;
-    } else {
-      if (_state_rs->get_attrib(ColorAttrib::get_class_slot()) !=
-          target_rs->get_attrib(ColorAttrib::get_class_slot())) {
-        altered |= Shader::SSD_color;
-      }
-      if (_state_rs->get_attrib(ColorScaleAttrib::get_class_slot()) !=
-          target_rs->get_attrib(ColorScaleAttrib::get_class_slot())) {
-        altered |= Shader::SSD_colorscale;
-      }
-      if (_state_rs->get_attrib(MaterialAttrib::get_class_slot()) !=
-          target_rs->get_attrib(MaterialAttrib::get_class_slot())) {
-        altered |= Shader::SSD_material;
-      }
-      if (_state_rs->get_attrib(ShaderAttrib::get_class_slot()) !=
-          target_rs->get_attrib(ShaderAttrib::get_class_slot())) {
-        altered |= Shader::SSD_shaderinputs;
-      }
-      if (_state_rs->get_attrib(FogAttrib::get_class_slot()) !=
-          target_rs->get_attrib(FogAttrib::get_class_slot())) {
-        altered |= Shader::SSD_fog;
-      }
-      if (_state_rs->get_attrib(LightAttrib::get_class_slot()) !=
-          target_rs->get_attrib(LightAttrib::get_class_slot())) {
-        altered |= Shader::SSD_light;
-      }
-      if (_state_rs->get_attrib(ClipPlaneAttrib::get_class_slot()) !=
-          target_rs->get_attrib(ClipPlaneAttrib::get_class_slot())) {
-        altered |= Shader::SSD_clip_planes;
-      }
-      if (_state_rs->get_attrib(TexMatrixAttrib::get_class_slot()) !=
-          target_rs->get_attrib(TexMatrixAttrib::get_class_slot())) {
-        altered |= Shader::SSD_tex_matrix;
-      }
+  if (_state_rs.was_deleted() || _state_rs == (const RenderState *)NULL) {
+    // Reset all of the state.
+    altered |= Shader::SSD_general;
+    _state_rs = target_rs;
+
+  } else if (_state_rs != target_rs) {
+    // The state has changed since last time.
+    if (_state_rs->get_attrib(ColorAttrib::get_class_slot()) !=
+        target_rs->get_attrib(ColorAttrib::get_class_slot())) {
+      altered |= Shader::SSD_color;
+    }
+    if (_state_rs->get_attrib(ColorScaleAttrib::get_class_slot()) !=
+        target_rs->get_attrib(ColorScaleAttrib::get_class_slot())) {
+      altered |= Shader::SSD_colorscale;
+    }
+    if (_state_rs->get_attrib(MaterialAttrib::get_class_slot()) !=
+        target_rs->get_attrib(MaterialAttrib::get_class_slot())) {
+      altered |= Shader::SSD_material;
+    }
+    if (_state_rs->get_attrib(ShaderAttrib::get_class_slot()) !=
+        target_rs->get_attrib(ShaderAttrib::get_class_slot())) {
+      altered |= Shader::SSD_shaderinputs;
+    }
+    if (_state_rs->get_attrib(FogAttrib::get_class_slot()) !=
+        target_rs->get_attrib(FogAttrib::get_class_slot())) {
+      altered |= Shader::SSD_fog;
+    }
+    if (_state_rs->get_attrib(LightAttrib::get_class_slot()) !=
+        target_rs->get_attrib(LightAttrib::get_class_slot())) {
+      altered |= Shader::SSD_light;
+    }
+    if (_state_rs->get_attrib(ClipPlaneAttrib::get_class_slot()) !=
+        target_rs->get_attrib(ClipPlaneAttrib::get_class_slot())) {
+      altered |= Shader::SSD_clip_planes;
+    }
+    if (_state_rs->get_attrib(TexMatrixAttrib::get_class_slot()) !=
+        target_rs->get_attrib(TexMatrixAttrib::get_class_slot())) {
+      altered |= Shader::SSD_tex_matrix;
     }
     _state_rs = target_rs;
   }
@@ -707,6 +709,7 @@ issue_parameters(int altered) {
     }
   }
 
+  cg_report_errors();
   _glgsg->report_my_gl_errors();
 }
 
@@ -773,8 +776,8 @@ disable_shader_vertex_arrays() {
     return;
   }
 
-  for (int i = 0; i < (int)_shader->_var_spec.size(); ++i) {
-    GLint p = _shader->_var_spec[i]._id._seqno;
+  for (size_t i = 0; i < _shader->_var_spec.size(); ++i) {
+    GLint p = _attributes[i];
 
     if (p >= 0) {
       _glgsg->_glDisableVertexAttribArray(p);
@@ -843,8 +846,8 @@ update_shader_vertex_arrays(ShaderContext *prev, bool force) {
     const GeomVertexArrayDataHandle *array_reader;
     Geom::NumericType numeric_type;
     int start, stride, num_values;
-    int nvarying = _shader->_var_spec.size();
-    for (int i = 0; i < nvarying; ++i) {
+    size_t nvarying = _shader->_var_spec.size();
+    for (size_t i = 0; i < nvarying; ++i) {
       const Shader::ShaderVarSpec &bind = _shader->_var_spec[i];
       InternalName *name = bind._name;
       int texslot = bind._append_uv;
@@ -858,7 +861,7 @@ update_shader_vertex_arrays(ShaderContext *prev, bool force) {
           name = name->append(texname->get_basename());
         }
       }
-      GLint p = bind._id._seqno;
+      GLint p = _attributes[i];
 
       // Don't apply vertex colors if they are disabled with a ColorAttrib.
       int num_elements, element_stride, divisor;
