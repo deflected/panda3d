@@ -181,7 +181,7 @@ class Interval(DirectObject):
         already started, this changes its speed on-the-fly.  Note that
         since playRate is a parameter to start() and loop(), the next
         call to start() or loop() will reset this parameter. """
-        
+
         if self.isPlaying():
             self.pause()
             self.__playRate = playRate
@@ -398,6 +398,11 @@ class Interval(DirectObject):
             space = space + ' '
         return (space + self.name + ' dur: %.2f' % self.duration)
 
+    open_ended = property(getOpenEnded)
+    stopped = property(isStopped)
+    t = property(getT, setT)
+    play_rate = property(getPlayRate, setPlayRate)
+    done_event = property(getDoneEvent, setDoneEvent)
 
     # The rest of these methods are duplicates of functions defined
     # for the CInterval class via the file CInterval-extensions.py.

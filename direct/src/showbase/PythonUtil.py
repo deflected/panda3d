@@ -1303,7 +1303,7 @@ class Enum:
         _checkValidIdentifier = staticmethod(_checkValidIdentifier)
 
     def __init__(self, items, start=0):
-        if type(items) == types.StringType:
+        if isinstance(items, str):
             items = items.split(',')
 
         self._stringTable = {}
@@ -1315,7 +1315,7 @@ class Enum:
         i = start
         for item in items:
             # remove leading/trailing whitespace
-            item = string.strip(item)
+            item = item.strip()
             # is there anything left?
             if len(item) == 0:
                 continue

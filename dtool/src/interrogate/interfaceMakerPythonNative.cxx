@@ -1045,22 +1045,8 @@ write_class_details(ostream &out, Object *obj) {
   Properties::const_iterator pit;
   for (pit = obj->_properties.begin(); pit != obj->_properties.end(); ++pit) {
     Property *property = (*pit);
-    const InterrogateElement &ielem = property->_ielement;
-    string expected_params;
 
-    if (property->_getter != NULL) {
-      std::string fname = "PyObject *Dtool_" + ClassName + "_" + ielem.get_name() + "_Getter(PyObject *self, void *)";
-      write_function_for_name(out, obj, property->_getter->_remaps,
-                              fname, expected_params, true,
-                              AT_no_args, RF_pyobject | RF_err_null);
-    }
-
-    if (property->_setter != NULL) {
-      std::string fname = "int Dtool_" + ClassName + "_" + ielem.get_name() + "_Setter(PyObject *self, PyObject *arg, void *)";
-      write_function_for_name(out, obj, property->_setter->_remaps,
-                              fname, expected_params, true,
-                              AT_single_arg, RF_int);
-    }
+    write_getset(out, obj, property);
   }
 
   // Write the constructors.
@@ -2634,7 +2620,7 @@ write_module_class(ostream &out, Object *obj) {
       ++num_getset;
 
       string name1 = methodNameFromCppName(ielem.get_name(), "", false);
-      string name2 = methodNameFromCppName(ielem.get_name(), "", true);
+      //string name2 = methodNameFromCppName(ielem.get_name(), "", true);
 
       string getter = "&Dtool_" + ClassName + "_" + ielem.get_name() + "_Getter";
       string setter = "NULL";
@@ -2655,13 +2641,13 @@ write_module_class(ostream &out, Object *obj) {
       // Extra void* argument; we don't make use of it.
       out << "NULL},\n";
 
-      if (name1 != name2 && name1 != "__dict__") {
+      /*if (name1 != name2 && name1 != "__dict__") {
         // Add alternative spelling.
         out << "  {(char *)\"" << name2 << "\", " << getter << ", " << setter
             << ", (char *)\n"
             << "    \"Alias of " << name1 << ", for consistency with old naming conventions.\",\n"
             << "    NULL},\n";
-      }
+      }*/
     }
 
     out << "  {NULL},\n";
@@ -3385,33 +3371,14 @@ write_function_for_name(ostream &out, Object *obj,
   for (ri = remaps.begin(); ri != remaps.end(); ++ri) {
     remap = (*ri);
     if (is_remap_legal(remap)) {
-      int max_num_args = remap->_parameters.size();
+      int min_num_args = remap->get_min_num_args();
+      int max_num_args = remap->get_max_num_args();
       if (remap->_has_this) {
         has_this = true;
-
-        if (remap->_type != FunctionRemap::T_constructor) {
-          max_num_args--;
-        }
       }
 
       if (!remap->_has_this || remap->_const_method) {
         all_nonconst = false;
-      }
-
-      int min_num_args = 0;
-      FunctionRemap::Parameters::const_iterator pi;
-      pi = remap->_parameters.begin();
-      if (remap->_has_this && pi != remap->_parameters.end()) {
-        ++pi;
-      }
-      for (; pi != remap->_parameters.end(); ++pi) {
-        ParameterRemap *param = (*pi)._remap;
-        if (param->get_default_value() != (CPPExpression *)NULL) {
-          // We've reached the first parameter that takes a default value.
-          break;
-        } else {
-          ++min_num_args;
-        }
       }
 
       max_required_args = max(max_num_args, max_required_args);
@@ -3464,7 +3431,7 @@ write_function_for_name(ostream &out, Object *obj,
     max_required_args = collapse_default_remaps(map_sets, max_required_args);
   }
 
-  if (map_sets.size() > 1) {
+  if (map_sets.size() > 1 && (args_type == AT_varargs || args_type == AT_keyword_args)) {
     switch (args_type) {
     case AT_keyword_args:
       indent(out, 2) << "int parameter_count = (int)PyTuple_Size(args);\n";
@@ -3708,18 +3675,8 @@ write_coerce_constructor(ostream &out, Object *obj, bool is_const) {
           continue;
         }
 
-        int max_num_args = remap->_parameters.size();
-        int min_num_args = 0;
-        FunctionRemap::Parameters::const_iterator pi;
-        for (pi = remap->_parameters.begin(); pi != remap->_parameters.end(); ++pi) {
-          ParameterRemap *param = (*pi)._remap;
-          if (param->get_default_value() != (CPPExpression *)NULL) {
-            // We've reached the first parameter that takes a default value.
-            break;
-          } else {
-            ++min_num_args;
-          }
-        }
+        int min_num_args = remap->get_min_num_args();
+        int max_num_args = remap->get_max_num_args();
 
         // Coerce constructor should take at least one argument.
         nassertd(max_num_args > 0) continue;
@@ -3746,18 +3703,8 @@ write_coerce_constructor(ostream &out, Object *obj, bool is_const) {
       if (is_remap_legal(remap) && remap->_flags & FunctionRemap::F_coerce_constructor) {
         nassertd(!remap->_has_this) continue;
 
-        int max_num_args = remap->_parameters.size();
-        int min_num_args = 0;
-        FunctionRemap::Parameters::const_iterator pi;
-        for (pi = remap->_parameters.begin(); pi != remap->_parameters.end(); ++pi) {
-          ParameterRemap *param = (*pi)._remap;
-          if (param->get_default_value() != (CPPExpression *)NULL) {
-            // We've reached the first parameter that takes a default value.
-            break;
-          } else {
-            ++min_num_args;
-          }
-        }
+        int min_num_args = remap->get_min_num_args();
+        int max_num_args = remap->get_max_num_args();
 
         // Coerce constructor should take at least one argument.
         nassertd(max_num_args > 0) continue;
@@ -4733,13 +4680,17 @@ write_function_instance(ostream &out, FunctionRemap *remap,
         expected_params += "str";
 
       } else if (TypeManager::is_wchar_pointer(orig_type)) {
+        indent(out, indent_level) << "#if PY_VERSION_HEX >= 0x03020000\n";
+        indent(out, indent_level) << "PyObject *" << param_name << ";\n";
+        indent(out, indent_level) << "#else\n";
         indent(out, indent_level) << "PyUnicodeObject *" << param_name << ";\n";
+        indent(out, indent_level) << "#endif\n";
         format_specifiers += "U";
         parameter_list += ", &" + param_name;
 
         extra_convert
           << "#if PY_VERSION_HEX >= 0x03030000\n"
-          << "wchar_t *" << param_name << "_str = PyUnicode_AsWideCharString((PyObject *)" << param_name << ", NULL);\n"
+          << "wchar_t *" << param_name << "_str = PyUnicode_AsWideCharString(" << param_name << ", NULL);\n"
           << "#else"
           << "Py_ssize_t " << param_name << "_len = PyUnicode_GET_SIZE(" << param_name << ");\n"
           << "wchar_t *" << param_name << "_str = (wchar_t *)alloca(sizeof(wchar_t) * (" + param_name + "_len + 1));\n"
@@ -4757,14 +4708,18 @@ write_function_instance(ostream &out, FunctionRemap *remap,
         expected_params += "unicode";
 
       } else if (TypeManager::is_wstring(orig_type)) {
+        indent(out, indent_level) << "#if PY_VERSION_HEX >= 0x03020000\n";
+        indent(out, indent_level) << "PyObject *" << param_name << ";\n";
+        indent(out, indent_level) << "#else\n";
         indent(out, indent_level) << "PyUnicodeObject *" << param_name << ";\n";
+        indent(out, indent_level) << "#endif\n";
         format_specifiers += "U";
         parameter_list += ", &" + param_name;
 
         extra_convert
           << "#if PY_VERSION_HEX >= 0x03030000\n"
           << "Py_ssize_t " << param_name << "_len;\n"
-          << "wchar_t *" << param_name << "_str = PyUnicode_AsWideCharString((PyObject *)"
+          << "wchar_t *" << param_name << "_str = PyUnicode_AsWideCharString("
           << param_name << ", &" << param_name << "_len);\n"
           << "#else\n"
           << "Py_ssize_t " << param_name << "_len = PyUnicode_GET_SIZE(" << param_name << ");\n"
@@ -4782,14 +4737,18 @@ write_function_instance(ostream &out, FunctionRemap *remap,
         expected_params += "unicode";
 
       } else if (TypeManager::is_const_ptr_to_basic_string_wchar(orig_type)) {
+        indent(out, indent_level) << "#if PY_VERSION_HEX >= 0x03020000\n";
+        indent(out, indent_level) << "PyObject *" << param_name << ";\n";
+        indent(out, indent_level) << "#else\n";
         indent(out, indent_level) << "PyUnicodeObject *" << param_name << ";\n";
+        indent(out, indent_level) << "#endif\n";
         format_specifiers += "U";
         parameter_list += ", &" + param_name;
 
         extra_convert
           << "#if PY_VERSION_HEX >= 0x03030000\n"
           << "Py_ssize_t " << param_name << "_len;\n"
-          << "wchar_t *" << param_name << "_str = PyUnicode_AsWideCharString((PyObject *)"
+          << "wchar_t *" << param_name << "_str = PyUnicode_AsWideCharString("
           << param_name << ", &" << param_name << "_len);\n"
           << "#else\n"
           << "Py_ssize_t " << param_name << "_len = PyUnicode_GET_SIZE(" << param_name << ");\n"
@@ -5927,6 +5886,10 @@ write_function_instance(ostream &out, FunctionRemap *remap,
       indent(out, indent_level)
         << "return DTool_PyInit_Finalize(self, (void *)" << return_expr << ", &" << CLASS_PREFIX << make_safe_name(itype.get_scoped_name()) << ", true, false);\n";
 
+    } else if (TypeManager::is_bool(orig_type)) {
+      // It's an error return boolean, I guess.  Return 0 on success.
+      indent(out, indent_level) << "return (" << return_expr << ") ? 0 : -1;\n";
+
     } else if (TypeManager::is_integer(orig_type)) {
       if ((return_flags & RF_compare) == RF_compare) {
         // Make sure it returns -1, 0, or 1, or Python complains with:
@@ -6432,6 +6395,97 @@ write_make_seq(ostream &out, Object *obj, const std::string &ClassName,
 }
 
 ////////////////////////////////////////////////////////////////////
+//     Function: InterfaceMakerPythonName::write_getset
+//       Access: Public
+//  Description: Generates the synthetic method described by the
+//               MAKE_PROPERTY() macro.
+////////////////////////////////////////////////////////////////////
+void InterfaceMakerPythonNative::
+write_getset(ostream &out, Object *obj, Property *property) {
+
+  string ClassName = make_safe_name(obj->_itype.get_scoped_name());
+  std::string cClassName = obj->_itype.get_true_name();
+
+  const InterrogateElement &ielem = property->_ielement;
+
+  if (property->_getter != NULL) {
+    FunctionRemap *remap = property->_getter->_remaps.front();
+
+    out << "PyObject *Dtool_" + ClassName + "_" + ielem.get_name() + "_Getter(PyObject *self, void *) {\n";
+    if (remap->_const_method) {
+      out << "  const " << cClassName  << " *local_this = NULL;\n";
+      out << "  if (!Dtool_Call_ExtractThisPointer(self, Dtool_" << ClassName << ", (void **)&local_this)) {\n";
+    } else {
+      out << "  " << cClassName  << " *local_this = NULL;\n";
+      out << "  if (!Dtool_Call_ExtractThisPointer_NonConst(self, Dtool_" << ClassName << ", (void **)&local_this, \""
+          << classNameFromCppName(cClassName, false) << "." << ielem.get_name() << "\")) {\n";
+    }
+    out << "    return NULL;\n";
+    out << "  }\n\n";
+
+    if (property->_has_function != NULL) {
+      out << "  if (!local_this->" << property->_has_function->_ifunc.get_name() << "()) {\n"
+          << "    Py_INCREF(Py_None);\n"
+          << "    return Py_None;\n"
+          << "  }\n";
+    }
+
+    std::set<FunctionRemap*> remaps;
+    remaps.insert(remap);
+
+    string expected_params;
+    write_function_forset(out, remaps, 0, 0,
+                          expected_params, 2, false, true, AT_no_args,
+                          RF_pyobject | RF_err_null, false, false);
+    out << "}\n\n";
+  }
+
+  if (property->_setter != NULL) {
+    out << "int Dtool_" + ClassName + "_" + ielem.get_name() + "_Setter(PyObject *self, PyObject *arg, void *) {\n";
+    out << "  " << cClassName  << " *local_this = NULL;\n";
+    out << "  if (!Dtool_Call_ExtractThisPointer_NonConst(self, Dtool_" << ClassName << ", (void **)&local_this, \""
+        << classNameFromCppName(cClassName, false) << "." << ielem.get_name() << "\")) {\n";
+    out << "    return -1;\n";
+    out << "  }\n\n";
+
+    if (property->_clear_function != NULL) {
+      out << "  if (arg == Py_None) {\n"
+          << "    local_this->" << property->_clear_function->_ifunc.get_name() << "();\n"
+          << "    return 0;\n"
+          << "  }\n";
+    }
+
+    std::set<FunctionRemap*> remaps;
+
+    // Extract only the setters that take one argument.
+    Function::Remaps::iterator it;
+    for (it = property->_setter->_remaps.begin();
+         it != property->_setter->_remaps.end();
+         ++it) {
+      FunctionRemap *remap = *it;
+      int min_num_args = remap->get_min_num_args();
+      int max_num_args = remap->get_max_num_args();
+      if (min_num_args <= 1 && max_num_args >= 1) {
+        remaps.insert(remap);
+      }
+    }
+
+    string expected_params;
+    write_function_forset(out, remaps, 1, 1,
+                          expected_params, 2, true, true, AT_single_arg,
+                          RF_int, false, false);
+
+    out << "  if (!_PyErr_OCCURRED()) {\n";
+    out << "    Dtool_Raise_BadArgumentsError(\n";
+    output_quoted(out, 6, expected_params);
+    out << ");\n";
+    out << "  }\n";
+    out << "  return -1;\n";
+    out << "}\n\n";
+  }
+}
+
+////////////////////////////////////////////////////////////////////
 //     Function: InterfaceMakerPythonNative::record_object
 //       Access: Protected
 //  Description: Records the indicated type, which may be a struct
@@ -6536,6 +6590,22 @@ record_object(TypeIndex type_index) {
       Function *getter = record_function(itype, func_index);
       if (is_function_legal(getter)) {
         property->_getter = getter;
+      }
+    }
+
+    if (ielement.has_has_function()) {
+      FunctionIndex func_index = ielement.get_has_function();
+      Function *has_function = record_function(itype, func_index);
+      if (is_function_legal(has_function)) {
+        property->_has_function = has_function;
+      }
+    }
+
+    if (ielement.has_clear_function()) {
+      FunctionIndex func_index = ielement.get_clear_function();
+      Function *clear_function = record_function(itype, func_index);
+      if (is_function_legal(clear_function)) {
+        property->_clear_function = clear_function;
       }
     }
 
