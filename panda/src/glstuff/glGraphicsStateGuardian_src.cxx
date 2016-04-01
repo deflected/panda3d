@@ -56,6 +56,7 @@
 #include "depthWriteAttrib.h"
 #include "fogAttrib.h"
 #include "lightAttrib.h"
+#include "logicOpAttrib.h"
 #include "materialAttrib.h"
 #include "rescaleNormalAttrib.h"
 #include "scissorAttrib.h"
@@ -169,7 +170,7 @@ static const string default_fshader =
   "#version 130\n"
   "in vec2 texcoord;\n"
   "in vec4 color;\n"
-  "out vec4 p3d_FragColor;"
+  "out vec4 p3d_FragColor;\n"
   "uniform sampler2D p3d_Texture0;\n"
   "uniform vec4 p3d_TexAlphaOnly;\n"
 #else
@@ -414,7 +415,12 @@ debug_callback(GLenum source, GLenum type, GLuint id, GLenum severity, GLsizei l
     break;
 
   case GL_DEBUG_SEVERITY_MEDIUM:
-    level = NS_warning;
+    if (type == GL_DEBUG_TYPE_PERFORMANCE) {
+      // Performance warnings should really be "info".
+      level = NS_info;
+    } else {
+      level = NS_warning;
+    }
     break;
 
   case GL_DEBUG_SEVERITY_LOW:
@@ -470,6 +476,7 @@ reset() {
   _inv_state_mask.clear_bit(TransparencyAttrib::get_class_slot());
   _inv_state_mask.clear_bit(ColorWriteAttrib::get_class_slot());
   _inv_state_mask.clear_bit(ColorBlendAttrib::get_class_slot());
+  _inv_state_mask.clear_bit(LogicOpAttrib::get_class_slot());
   _inv_state_mask.clear_bit(TextureAttrib::get_class_slot());
   _inv_state_mask.clear_bit(TexGenAttrib::get_class_slot());
   _inv_state_mask.clear_bit(TexMatrixAttrib::get_class_slot());
@@ -1940,6 +1947,16 @@ reset() {
   }
 #endif
 
+#ifndef OPENGLES
+  if (is_at_least_gl_version(4, 3) || has_extension("GL_ARB_framebuffer_no_attachments")) {
+    _glFramebufferParameteri = (PFNGLFRAMEBUFFERPARAMETERIPROC)
+      get_extension_func("glFramebufferParameteri");
+    _supports_empty_framebuffer = true;
+  } else {
+    _supports_empty_framebuffer = false;
+  }
+#endif
+
   _supports_framebuffer_multisample = false;
   if (has_extension("GL_EXT_framebuffer_multisample")) {
     _supports_framebuffer_multisample = true;
@@ -2513,7 +2530,7 @@ reset() {
 
   if (core_profile) {
     // TODO: better detection mechanism?
-    _supports_stencil = true;
+    _supports_stencil = support_stencil;
   }
 #ifdef SUPPORT_FIXED_FUNCTION
   else if (support_stencil) {
@@ -2984,7 +3001,7 @@ clear(DrawableRegion *clearable) {
     mask |= GL_DEPTH_BUFFER_BIT;
   }
 
-  if (clearable->get_clear_stencil_active()) {
+  if (_supports_stencil && clearable->get_clear_stencil_active()) {
     glStencilMask(~0);
     glClearStencil(clearable->get_clear_stencil());
     mask |= GL_STENCIL_BUFFER_BIT;
@@ -4812,6 +4829,7 @@ update_texture(TextureContext *tc, bool force) {
     if (gtc->was_properties_modified()) {
       specify_texture(gtc, tex->get_default_sampler());
     }
+
     bool okflag = upload_texture(gtc, force, tex->uses_mipmaps());
     if (!okflag) {
       GLCAT.error()
@@ -6233,7 +6251,9 @@ do_issue_render_mode() {
   }
   report_my_gl_errors();
 
+#ifdef SUPPORT_FIXED_FUNCTION
   do_point_size();
+#endif
 }
 
 /**
@@ -6614,6 +6634,34 @@ do_issue_material() {
 #endif  // SUPPORT_FIXED_FUNCTION
 
 /**
+ * Issues the logic operation attribute to the GL.
+ */
+#if !defined(OPENGLES) || defined(OPENGLES_1)
+void CLP(GraphicsStateGuardian)::
+do_issue_logic_op() {
+  const LogicOpAttrib *target_logic_op;
+  _target_rs->get_attrib_def(target_logic_op);
+
+  if (target_logic_op->get_operation() != LogicOpAttrib::O_none) {
+    glEnable(GL_COLOR_LOGIC_OP);
+    glLogicOp(GL_CLEAR - 1 + (int)target_logic_op->get_operation());
+
+    if (GLCAT.is_spam()) {
+      GLCAT.spam() << "glEnable(GL_COLOR_LOGIC_OP)\n";
+      GLCAT.spam() << "glLogicOp(" << target_logic_op->get_operation() << ")\n";
+    }
+  } else {
+    glDisable(GL_COLOR_LOGIC_OP);
+    glLogicOp(GL_COPY);
+
+    if (GLCAT.is_spam()) {
+      GLCAT.spam() << "glDisable(GL_COLOR_LOGIC_OP)\n";
+    }
+  }
+}
+#endif
+
+/**
  *
  */
 void CLP(GraphicsStateGuardian)::
@@ -6711,6 +6759,19 @@ do_issue_blending() {
     if (GLCAT.is_spam()) {
       GLCAT.spam() << "glBlendEquation(GL_FUNC_ADD)\n";
       GLCAT.spam() << "glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)\n";
+    }
+    return;
+
+  case TransparencyAttrib::M_premultiplied_alpha:
+    enable_multisample_alpha_one(false);
+    enable_multisample_alpha_mask(false);
+    enable_blend(true);
+    _glBlendEquation(GL_FUNC_ADD);
+    glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+
+    if (GLCAT.is_spam()) {
+      GLCAT.spam() << "glBlendEquation(GL_FUNC_ADD)\n";
+      GLCAT.spam() << "glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA)\n";
     }
     return;
 
@@ -9626,6 +9687,16 @@ set_state_and_transform(const RenderState *target,
     // PStatGPUTimer timer(this, _draw_set_state_shade_model_pcollector);
     do_issue_shade_model();
     _state_mask.set_bit(shade_model_slot);
+  }
+#endif
+
+#if !defined(OPENGLES) || defined(OPENGLES_1)
+  int logic_op_slot = LogicOpAttrib::get_class_slot();
+  if (_target_rs->get_attrib(logic_op_slot) != _state_rs->get_attrib(logic_op_slot) ||
+      !_state_mask.get_bit(logic_op_slot)) {
+    // PStatGPUTimer timer(this, _draw_set_state_logic_op_pcollector);
+    do_issue_logic_op();
+    _state_mask.set_bit(logic_op_slot);
   }
 #endif
 
@@ -12698,9 +12769,9 @@ extract_texture_image(PTA_uchar &image, size_t &page_size,
  * Internally sets the point size parameters after any of the properties have
  * changed that might affect this.
  */
+#ifdef SUPPORT_FIXED_FUNCTION
 void CLP(GraphicsStateGuardian)::
 do_point_size() {
-#ifndef OPENGLES_2
   if (!_point_perspective) {
     // Normal, constant-sized points.  Here _point_size is a width in pixels.
     static LVecBase3f constant(1.0f, 0.0f, 0.0f);
@@ -12730,8 +12801,8 @@ do_point_size() {
   }
 
   report_my_gl_errors();
-#endif
 }
+#endif
 
 /**
  * Returns true if this particular GSG supports the specified Cg Shader

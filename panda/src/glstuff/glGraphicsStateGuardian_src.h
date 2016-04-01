@@ -405,6 +405,9 @@ protected:
   void do_issue_material();
 #endif
   void do_issue_texture();
+#if !defined(OPENGLES) || defined(OPENGLES_1)
+  void do_issue_logic_op();
+#endif
   void do_issue_blending();
 #ifdef SUPPORT_FIXED_FUNCTION
   void do_issue_tex_gen();
@@ -567,7 +570,9 @@ protected:
            Texture::ComponentType type,
            Texture::CompressionMode compression, int n);
 
+#ifdef SUPPORT_FIXED_FUNCTION
   void do_point_size();
+#endif
 
   enum AutoAntialiasMode {
     AA_poly,
@@ -826,6 +831,11 @@ public:
 
 #ifndef OPENGLES
   PFNGLGENERATETEXTUREMIPMAPPROC _glGenerateTextureMipmap;
+#endif
+
+#ifndef OPENGLES
+  bool _supports_empty_framebuffer;
+  PFNGLFRAMEBUFFERPARAMETERIPROC _glFramebufferParameteri;
 #endif
 
   bool _supports_framebuffer_multisample;
