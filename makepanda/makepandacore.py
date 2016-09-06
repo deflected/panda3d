@@ -76,6 +76,7 @@ MAYAVERSIONINFO = [("MAYA6",   "6.0"),
                    ("MAYA2014","2014"),
                    ("MAYA2015","2015"),
                    ("MAYA2016","2016"),
+                   ("MAYA20165","2016.5")
 ]
 
 MAXVERSIONINFO = [("MAX6", "SOFTWARE\\Autodesk\\3DSMAX\\6.0", "installdir", "maxsdk\\cssdk\\include"),
@@ -1542,12 +1543,17 @@ def SmartPkgEnable(pkg, pkgconfig = None, libs = None, incs = None, defs = None,
 
             location = LocateLibrary(libname, lpath, prefer_static=True)
             if location is not None:
+                # If it's a .so or .dylib we may have changed it and copied it to the built/lib dir.
+                if location.endswith('.so') or location.endswith('.dylib'):
+                    location = os.path.join(GetOutputDir(), "lib", os.path.basename(location))
                 LibName(target_pkg, location)
             else:
                 # This is for backward compatibility - in the thirdparty dir,
                 # we kept some libs with "panda" prefix, like libpandatiff.
                 location = LocateLibrary("panda" + libname, lpath, prefer_static=True)
                 if location is not None:
+                    if location.endswith('.so') or location.endswith('.dylib'):
+                        location = os.path.join(GetOutputDir(), "lib", os.path.basename(location))
                     LibName(target_pkg, location)
                 else:
                     print(GetColor("cyan") + "Couldn't find library lib" + libname + " in thirdparty directory " + pkg.lower() + GetColor())
@@ -2045,9 +2051,56 @@ def SdkLocateWindows(version = '7.1'):
     version = version.upper()
 
     if version == '10':
+        version = '10.0'
+
+    if version.startswith('10.') and version.count('.') == 1:
+        # Choose the latest version of the Windows 10 SDK.
         platsdk = GetRegistryKey("SOFTWARE\\Microsoft\\Windows Kits\\Installed Roots", "KitsRoot10")
+
+        if platsdk and os.path.isdir(platsdk):
+            incdirs = glob.glob(os.path.join(platsdk, 'Include', version + '.*.*'))
+            max_version = ()
+            for dir in incdirs:
+                verstring = os.path.basename(dir)
+
+                # Check that the important include directories exist.
+                if not os.path.isdir(os.path.join(dir, 'ucrt')):
+                    continue
+                if not os.path.isdir(os.path.join(dir, 'shared')):
+                    continue
+                if not os.path.isdir(os.path.join(dir, 'um')):
+                    continue
+                if not os.path.isdir(os.path.join(platsdk, 'Lib', verstring, 'ucrt')):
+                    continue
+                if not os.path.isdir(os.path.join(platsdk, 'Lib', verstring, 'um')):
+                    continue
+
+                print(verstring)
+                vertuple = tuple(map(int, verstring.split('.')))
+                if vertuple > max_version:
+                    version = verstring
+                    max_version = vertuple
+
+            if not max_version:
+                # No suitable version found.
+                platsdk = None
+
+    elif version.startswith('10.'):
+        # We chose a specific version of the Windows 10 SDK.  Verify it exists.
+        platsdk = GetRegistryKey("SOFTWARE\\Microsoft\\Windows Kits\\Installed Roots", "KitsRoot10")
+
+        if version.count('.') == 2:
+            version += '.0'
+
+        if platsdk and not os.path.isdir(os.path.join(platsdk, 'Include', version)):
+            platsdk = None
+
+    elif version == '8.1':
+        platsdk = GetRegistryKey("SOFTWARE\\Microsoft\\Windows Kits\\Installed Roots", "KitsRoot81")
+
     elif version == '8.0':
         platsdk = GetRegistryKey("SOFTWARE\\Microsoft\\Windows Kits\\Installed Roots", "KitsRoot")
+
     else:
         platsdk = GetRegistryKey("SOFTWARE\\Microsoft\\Microsoft SDKs\\Windows\\v" + version, "InstallationFolder")
 
@@ -2314,12 +2367,13 @@ def SetupVisualStudioEnviron():
     AddToPathEnv("LIB",     SDK["VISUALSTUDIO"] + "VC\\lib\\" + libdir)
     AddToPathEnv("LIB",     SDK["VISUALSTUDIO"] + "VC\\atlmfc\\lib\\" + libdir)
 
-    if SDK["MSPLATFORM_VERSION"] == '10':
+    winsdk_ver = SDK["MSPLATFORM_VERSION"]
+    if winsdk_ver.startswith('10.'):
         AddToPathEnv("PATH",    SDK["MSPLATFORM"] + "bin\\" + arch)
 
         # Windows Kit 10 introduces the "universal CRT".
-        inc_dir = SDK["MSPLATFORM"] + "Include\\10.0.10586.0\\"
-        lib_dir = SDK["MSPLATFORM"] + "Lib\\10.0.10586.0\\"
+        inc_dir = SDK["MSPLATFORM"] + "Include\\" + winsdk_ver + "\\"
+        lib_dir = SDK["MSPLATFORM"] + "Lib\\" + winsdk_ver + "\\"
         AddToPathEnv("INCLUDE", inc_dir + "shared")
         AddToPathEnv("INCLUDE", inc_dir + "ucrt")
         AddToPathEnv("INCLUDE", inc_dir + "um")
@@ -2347,7 +2401,7 @@ def SetupVisualStudioEnviron():
 
     # Targeting the 7.1 SDK (which is the only way to have Windows XP support)
     # with Visual Studio 2015 requires use of the Universal CRT.
-    if SDK["MSPLATFORM_VERSION"] == '7.1' and SDK["VISUALSTUDIO_VERSION"] == '14.0':
+    if winsdk_ver == '7.1' and SDK["VISUALSTUDIO_VERSION"] == '14.0':
         win_kit = GetRegistryKey("SOFTWARE\\Microsoft\\Windows Kits\\Installed Roots", "KitsRoot10")
         AddToPathEnv("LIB", win_kit + "Lib\\10.0.10150.0\\ucrt\\" + arch)
         AddToPathEnv("INCLUDE", win_kit + "Include\\10.0.10150.0\\ucrt")
