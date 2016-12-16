@@ -23,12 +23,16 @@
 #include "colorAttrib.h"
 #include "materialAttrib.h"
 #include "textureAttrib.h"
+#include "cullBinAttrib.h"
 #include "cullFaceAttrib.h"
 #include "transparencyAttrib.h"
+#include "depthTestAttrib.h"
+#include "depthOffsetAttrib.h"
 #include "depthWriteAttrib.h"
 #include "lodNode.h"
 #include "switchNode.h"
 #include "sequenceNode.h"
+#include "uvScrollNode.h"
 #include "collisionNode.h"
 #include "collisionPolygon.h"
 #include "collisionPlane.h"
@@ -93,6 +97,26 @@ add_node(PandaNode *node) {
 
   NodePath root(node);
   convert_node(WorkingNodePath(root), _data, false, NULL);
+
+  // Remove the vertex pool if it has no vertices.
+  if (_vpool->empty()) {
+    _data->remove_child(_vpool);
+  }
+  _vpool = NULL;
+}
+
+/**
+ * Adds the scene graph rooted at the indicated node (but without the node
+ * itself) to the accumulated egg data within this object.  Call
+ * get_egg_data() to retrieve the result.
+ */
+void EggSaver::
+add_subgraph(PandaNode *root) {
+  _vpool = new EggVertexPool(root->get_name());
+  _data->add_child(_vpool);
+
+  NodePath root_path(root);
+  recurse_nodes(root_path, _data, false, NULL);
 
   // Remove the vertex pool if it has no vertices.
   if (_vpool->empty()) {
@@ -359,9 +383,12 @@ convert_character_node(Character *node, const WorkingNodePath &node_path,
                        EggGroupNode *egg_parent, bool has_decal) {
 
   // A sequence node gets converted to an ordinary EggGroup, we only apply the
-  // appropriate switch attributes to turn it into a sequence
+  // appropriate switch attributes to turn it into a sequence.
+  // We have to use DT_structured since it is the only mode that preserves the
+  // node hierarchy, including LODNodes and CollisionNodes that may be under
+  // this Character node.
   EggGroup *egg_group = new EggGroup(node->get_name());
-  egg_group->set_dart_type(EggGroup::DT_default);
+  egg_group->set_dart_type(EggGroup::DT_structured);
   egg_parent->add_child(egg_group);
   apply_node_properties(egg_group, node);
 
@@ -391,6 +418,19 @@ convert_collision_node(CollisionNode *node, const WorkingNodePath &node_path,
   egg_parent->add_child(egg_group);
   apply_node_properties(egg_group, node, false);
 
+  // Set the collision masks, if present.
+  CollideMask from_mask = node->get_from_collide_mask();
+  CollideMask into_mask = node->get_into_collide_mask();
+  if (from_mask != CollisionNode::get_default_collide_mask() ||
+      into_mask != CollisionNode::get_default_collide_mask()) {
+    if (from_mask == into_mask) {
+      egg_group->set_collide_mask(into_mask);
+    } else {
+      egg_group->set_from_collide_mask(from_mask);
+      egg_group->set_into_collide_mask(into_mask);
+    }
+  }
+
   // turn it into a collision node
   egg_group->set_collide_flags(EggGroup::CF_descend);
 
@@ -410,8 +450,20 @@ convert_collision_node(CollisionNode *node, const WorkingNodePath &node_path,
     // traverse solids
     for (int i = 0; i < num_solids; i++) {
       CPT(CollisionSolid) child = node->get_solid(i);
+      int flags = EggGroup::CF_descend;
+
+      if (!child->is_tangible()) {
+        flags |= EggGroup::CF_intangible;
+      }
+
+      if (child->has_effective_normal() &&
+          child->get_effective_normal() == LVector3::up()) {
+        flags |= EggGroup::CF_level;
+      }
+
       if (child->is_of_type(CollisionPolygon::get_class_type())) {
         egg_group->set_cs_type(EggGroup::CST_polyset);
+        egg_group->set_collide_flags(flags);
 
         EggPolygon *egg_poly = new EggPolygon;
         egg_group->add_child(egg_poly);
@@ -437,7 +489,6 @@ convert_collision_node(CollisionNode *node, const WorkingNodePath &node_path,
           egg_sphere = egg_group;
         } else {
           egg_sphere = new EggGroup;
-          egg_sphere->set_collide_flags(EggGroup::CF_descend);
           egg_group->add_child(egg_sphere);
         }
 
@@ -446,6 +497,7 @@ convert_collision_node(CollisionNode *node, const WorkingNodePath &node_path,
         } else {
           egg_sphere->set_cs_type(EggGroup::CST_sphere);
         }
+        egg_sphere->set_collide_flags(flags);
 
         EggVertex ev1, ev2;
         ev1.set_pos(LCAST(double, (center + offset) * net_mat));
@@ -479,10 +531,10 @@ convert_collision_node(CollisionNode *node, const WorkingNodePath &node_path,
           egg_plane = egg_group;
         } else {
           egg_plane = new EggGroup;
-          egg_plane->set_collide_flags(EggGroup::CF_descend);
           egg_group->add_child(egg_plane);
         }
         egg_plane->set_cs_type(EggGroup::CST_plane);
+        egg_plane->set_collide_flags(flags);
 
         EggVertex ev0, ev1, ev2;
         ev0.set_pos(LCAST(double, origin * net_mat));
@@ -506,10 +558,10 @@ convert_collision_node(CollisionNode *node, const WorkingNodePath &node_path,
           egg_box = egg_group;
         } else {
           egg_box = new EggGroup;
-          egg_box->set_collide_flags(EggGroup::CF_descend);
           egg_group->add_child(egg_box);
         }
         egg_box->set_cs_type(EggGroup::CST_box);
+        egg_box->set_collide_flags(flags);
 
         // Just add the min and max points.
         EggVertex ev0, ev1;
@@ -545,10 +597,10 @@ convert_collision_node(CollisionNode *node, const WorkingNodePath &node_path,
           egg_tube = egg_group;
         } else {
           egg_tube = new EggGroup;
-          egg_tube->set_collide_flags(EggGroup::CF_descend);
           egg_group->add_child(egg_tube);
         }
         egg_tube->set_cs_type(EggGroup::CST_tube);
+        egg_tube->set_collide_flags(flags);
 
         // Add two points for the endcaps, and then two points around the
         // centroid to indicate the radius.
@@ -611,7 +663,17 @@ convert_geom_node(GeomNode *node, const WorkingNodePath &node_path,
   // Now get out all the various kinds of geometry.
   int num_geoms = node->get_num_geoms();
   for (int i = 0; i < num_geoms; ++i) {
-    CPT(RenderState) geom_state = net_state->compose(node->get_geom_state(i));
+    CPT(RenderState) geom_state = node->get_geom_state(i);
+    CPT(RenderState) geom_net_state = net_state->compose(geom_state);
+
+    // If there is only one Geom, and the node has no state, apply the state
+    // attributes from the Geom to the group instead, so that we don't end up
+    // duplicating it for a lot of primitives.
+    if (num_geoms == 1 && node->get_num_children() == 0 && egg_parent == egg_group &&
+        !geom_state->is_empty() && node->get_state()->is_empty()) {
+      apply_state_properties(egg_group, geom_state);
+      geom_state = RenderState::make_empty();
+    }
 
     const Geom *geom = node->get_geom(i);
     int num_primitives = geom->get_num_primitives();
@@ -620,7 +682,7 @@ convert_geom_node(GeomNode *node, const WorkingNodePath &node_path,
       CPT(GeomPrimitive) simple = primitive->decompose();
       CPT(GeomVertexData) vdata = geom->get_vertex_data();
       // vdata = vdata->animate_vertices(true, Thread::get_current_thread());
-      convert_primitive(vdata, simple, geom_state,
+      convert_primitive(vdata, simple, geom_state, geom_net_state,
                         net_mat, egg_parent, joint_map);
     }
   }
@@ -634,10 +696,28 @@ convert_geom_node(GeomNode *node, const WorkingNodePath &node_path,
 void EggSaver::
 convert_primitive(const GeomVertexData *vertex_data,
                   const GeomPrimitive *primitive,
-                  const RenderState *net_state,
+                  const RenderState *geom_state, const RenderState *net_state,
                   const LMatrix4 &net_mat, EggGroupNode *egg_parent,
                   CharacterJointMap *joint_map) {
   GeomVertexReader reader(vertex_data);
+
+  // Make a zygote that will be duplicated for each primitive.
+  PT(EggPrimitive) egg_prim;
+  if (primitive->is_of_type(GeomTriangles::get_class_type())) {
+    egg_prim = new EggPolygon();
+  } else if (primitive->is_of_type(GeomPatches::get_class_type())) {
+    egg_prim = new EggPatch();
+  } else if (primitive->is_of_type(GeomPoints::get_class_type())) {
+    egg_prim = new EggPoint();
+  } else if (primitive->is_of_type(GeomLines::get_class_type())) {
+    egg_prim = new EggLine();
+  } else {
+    // Huh, an unknown geometry type.
+    return;
+  }
+
+  // Apply render attributes.
+  apply_state_properties(egg_prim, geom_state);
 
   // Check for a color scale.
   LVecBase4 color_scale(1.0f, 1.0f, 1.0f, 1.0f);
@@ -670,20 +750,20 @@ convert_primitive(const GeomVertexData *vertex_data,
   const MaterialAttrib *ma;
   if (net_state->get_attrib(ma)) {
     egg_mat = get_egg_material(ma->get_material());
+    if (egg_mat != (EggMaterial *)NULL) {
+      egg_prim->set_material(egg_mat);
+    }
   }
 
   // Check for a texture.
-  EggTexture *egg_tex = (EggTexture *)NULL;
   const TextureAttrib *ta;
   if (net_state->get_attrib(ta)) {
-    egg_tex = get_egg_texture(ta->get_texture());
-  }
+    EggTexture *egg_tex = get_egg_texture(ta->get_texture());
 
-  // Check the texture environment
-  if ((ta != (const TextureAttrib *)NULL) && (egg_tex != (const EggTexture *)NULL)) {
-    TextureStage* tex_stage = ta->get_on_stage(0);
-    if (tex_stage != (const TextureStage *)NULL) {
-      switch (tex_stage->get_mode()) {
+    if (egg_tex != (EggTexture *)NULL) {
+      TextureStage *tex_stage = ta->get_on_stage(0);
+      if (tex_stage != (TextureStage *)NULL) {
+        switch (tex_stage->get_mode()) {
         case TextureStage::M_modulate:
           if (has_color_off == true) {
             egg_tex->set_env_type(EggTexture::ET_replace);
@@ -708,7 +788,10 @@ convert_primitive(const GeomVertexData *vertex_data,
           break;
         default:
           break;
+        }
       }
+
+      egg_prim->set_texture(egg_tex);
     }
   }
 
@@ -717,73 +800,22 @@ convert_primitive(const GeomVertexData *vertex_data,
   const CullFaceAttrib *cfa;
   if (net_state->get_attrib(cfa)) {
     if (cfa->get_effective_mode() == CullFaceAttrib::M_cull_none) {
-      bface = true;
-    }
-  }
-
-  // Check the depth write flag - only needed for AM_blend_no_occlude
-  bool has_depthwrite = false;
-  DepthWriteAttrib::Mode depthwrite = DepthWriteAttrib::M_on;
-  const DepthWriteAttrib *dwa;
-  if (net_state->get_attrib(dwa)) {
-    depthwrite = dwa->get_mode();
-    has_depthwrite = true;
-  }
-
-  // Check the transparency flag.
-  bool has_transparency = false;
-  TransparencyAttrib::Mode transparency = TransparencyAttrib::M_none;
-  const TransparencyAttrib *tra;
-  if (net_state->get_attrib(tra)) {
-    transparency = tra->get_mode();
-    has_transparency = true;
-  }
-  if (has_transparency && (egg_tex != (EggTexture *)NULL)) {
-    EggRenderMode::AlphaMode tex_trans = EggRenderMode::AM_unspecified;
-    switch (transparency) {
-      case TransparencyAttrib::M_none:
-        tex_trans = EggRenderMode::AM_off;
-        break;
-      case TransparencyAttrib::M_alpha:
-        if (has_depthwrite && (depthwrite == DepthWriteAttrib::M_off)) {
-          tex_trans = EggRenderMode::AM_blend_no_occlude;
-          has_depthwrite = false;
-        } else {
-          tex_trans = EggRenderMode::AM_blend;
-        }
-        break;
-      case TransparencyAttrib::M_premultiplied_alpha:
-        tex_trans = EggRenderMode::AM_premultiplied;
-        break;
-      case TransparencyAttrib::M_multisample:
-        tex_trans = EggRenderMode::AM_ms;
-        break;
-      case TransparencyAttrib::M_multisample_mask:
-        tex_trans = EggRenderMode::AM_ms_mask;
-        break;
-      case TransparencyAttrib::M_binary:
-        tex_trans = EggRenderMode::AM_binary;
-        break;
-      case TransparencyAttrib::M_dual:
-        tex_trans = EggRenderMode::AM_dual;
-        break;
-      default:  // intentional fall-through
-        break;
-    }
-    if (tex_trans != EggRenderMode::AM_unspecified) {
-      egg_tex->set_alpha_mode(tex_trans);
+      egg_prim->set_bface_flag(true);
     }
   }
 
   // Check for line thickness and such.
-  bool has_render_mode = false;
-  bool perspective = false;
-  PN_stdfloat thickness = 1;
   const RenderModeAttrib *rma;
   if (net_state->get_attrib(rma)) {
-    has_render_mode = true;
-    thickness = rma->get_thickness();
-    perspective = rma->get_perspective();
+    if (egg_prim->is_of_type(EggPoint::get_class_type())) {
+      EggPoint *egg_point = (EggPoint *)egg_prim.p();
+      egg_point->set_thick(rma->get_thickness());
+      egg_point->set_perspective(rma->get_perspective());
+
+    } else if (egg_prim->is_of_type(EggLine::get_class_type())) {
+      EggLine *egg_line = (EggLine *)egg_prim.p();
+      egg_line->set_thick(rma->get_thickness());
+    }
   }
 
   LNormal normal;
@@ -793,48 +825,9 @@ convert_primitive(const GeomVertexData *vertex_data,
   int num_primitives = primitive->get_num_primitives();
   int num_vertices = primitive->get_num_vertices_per_primitive();
 
-  EggPrimitive *(*make_func)(void);
-
-  if (primitive->is_of_type(GeomTriangles::get_class_type())) {
-    make_func = make_egg_polygon;
-  } else if (primitive->is_of_type(GeomPatches::get_class_type())) {
-    make_func = make_egg_patch;
-  } else if (primitive->is_of_type(GeomPoints::get_class_type())) {
-    make_func = make_egg_point;
-  } else if (primitive->is_of_type(GeomLines::get_class_type())) {
-    make_func = make_egg_line;
-  } else {
-    // Huh, an unknown geometry type.
-    return;
-  }
-
   for (int i = 0; i < num_primitives; ++i) {
-    PT(EggPrimitive) egg_prim = (*make_func)();
-
-    egg_parent->add_child(egg_prim);
-
-    if (egg_mat != (EggMaterial *)NULL) {
-      egg_prim->set_material(egg_mat);
-    }
-    if (egg_tex != (EggTexture *)NULL) {
-      egg_prim->set_texture(egg_tex);
-    }
-
-    if (bface) {
-      egg_prim->set_bface_flag(true);
-    }
-
-    if (has_render_mode) {
-      if (egg_prim->is_of_type(EggPoint::get_class_type())) {
-        EggPoint *egg_point = (EggPoint *)egg_prim.p();
-        egg_point->set_thick(thickness);
-        egg_point->set_perspective(perspective);
-
-      } else if (egg_prim->is_of_type(EggLine::get_class_type())) {
-        EggLine *egg_line = (EggLine *)egg_prim.p();
-        egg_line->set_thick(thickness);
-      }
-    }
+    PT(EggPrimitive) egg_child = egg_prim->make_copy();
+    egg_parent->add_child(egg_child);
 
     for (int j = 0; j < num_vertices; j++) {
       EggVertex egg_vert;
@@ -898,7 +891,7 @@ convert_primitive(const GeomVertexData *vertex_data,
         }
       }
 
-      egg_prim->add_vertex(new_egg_vert);
+      egg_child->add_vertex(new_egg_vert);
     }
   }
 }
@@ -960,6 +953,14 @@ apply_node_properties(EggGroup *egg_group, PandaNode *node, bool allow_backstage
     }
   }
 
+  if (node->is_of_type(UvScrollNode::get_class_type())) {
+    const UvScrollNode *scroll_node = (const UvScrollNode *)node;
+    egg_group->set_scroll_u(scroll_node->get_u_speed());
+    egg_group->set_scroll_v(scroll_node->get_v_speed());
+    egg_group->set_scroll_w(scroll_node->get_w_speed());
+    egg_group->set_scroll_r(scroll_node->get_r_speed());
+  }
+
   const RenderEffects *effects = node->get_effects();
   const RenderEffect *effect = effects->get_effect(BillboardEffect::get_class_type());
   if (effect != (RenderEffect *)NULL) {
@@ -1001,6 +1002,97 @@ apply_node_properties(EggGroup *egg_group, PandaNode *node, bool allow_backstage
       const LMatrix4 &mat = transform->get_mat();
       egg_group->set_transform3d(LCAST(double, mat));
     }
+    any_applied = true;
+  }
+
+  const RenderState *state = node->get_state();
+  if (apply_state_properties(egg_group, state)) {
+    return true;
+  }
+
+  return any_applied;
+}
+
+/**
+ * Applies any special render state settings on the primitive or group.
+ * Returns true if any were applied, false otherwise.
+ */
+bool EggSaver::
+apply_state_properties(EggRenderMode *egg_render_mode, const RenderState *state) {
+  if (state->is_empty()) {
+    return false;
+  }
+
+  bool any_applied = false;
+
+  // Check the transparency mode.
+  const TransparencyAttrib *tra;
+  if (state->get_attrib(tra)) {
+    EggRenderMode::AlphaMode tex_trans = EggRenderMode::AM_unspecified;
+    switch (tra->get_mode()) {
+    case TransparencyAttrib::M_none:
+      tex_trans = EggRenderMode::AM_off;
+      break;
+    case TransparencyAttrib::M_alpha:
+      tex_trans = EggRenderMode::AM_blend;
+      break;
+    case TransparencyAttrib::M_premultiplied_alpha:
+      tex_trans = EggRenderMode::AM_premultiplied;
+      break;
+    case TransparencyAttrib::M_multisample:
+      tex_trans = EggRenderMode::AM_ms;
+      break;
+    case TransparencyAttrib::M_multisample_mask:
+      tex_trans = EggRenderMode::AM_ms_mask;
+      break;
+    case TransparencyAttrib::M_binary:
+      tex_trans = EggRenderMode::AM_binary;
+      break;
+    case TransparencyAttrib::M_dual:
+      tex_trans = EggRenderMode::AM_dual;
+      break;
+    default:  // intentional fall-through
+      break;
+    }
+    egg_render_mode->set_alpha_mode(tex_trans);
+  }
+
+  const DepthWriteAttrib *dwa;
+  if (state->get_attrib(dwa)) {
+    if (dwa->get_mode() != DepthWriteAttrib::M_off) {
+      egg_render_mode->set_depth_write_mode(EggRenderMode::DWM_on);
+
+    } else if (egg_render_mode->get_alpha_mode() == EggRenderMode::AM_blend) {
+      // AM_blend_no_occlude is like AM_blend but also implies DWM_off.
+      egg_render_mode->set_alpha_mode(EggRenderMode::AM_blend_no_occlude);
+
+    } else {
+      egg_render_mode->set_depth_write_mode(EggRenderMode::DWM_off);
+    }
+    any_applied = true;
+  }
+
+  const DepthTestAttrib *dta;
+  if (state->get_attrib(dta)) {
+    RenderAttrib::PandaCompareFunc mode = dta->get_mode();
+    if (mode == DepthTestAttrib::M_none || mode == DepthTestAttrib::M_always) {
+      egg_render_mode->set_depth_test_mode(EggRenderMode::DTM_off);
+    } else {
+      egg_render_mode->set_depth_test_mode(EggRenderMode::DTM_on);
+    }
+    any_applied = true;
+  }
+
+  const DepthOffsetAttrib *doa;
+  if (state->get_attrib(doa)) {
+    egg_render_mode->set_depth_offset(doa->get_offset());
+    any_applied = true;
+  }
+
+  const CullBinAttrib *cba;
+  if (state->get_attrib(cba)) {
+    egg_render_mode->set_bin(cba->get_bin_name());
+    egg_render_mode->set_draw_order(cba->get_draw_order());
     any_applied = true;
   }
 
@@ -1249,36 +1341,4 @@ get_egg_texture(Texture *tex) {
   }
 
   return NULL;
-}
-
-/**
- * A factory function to make a new EggPolygon instance.
- */
-EggPrimitive *EggSaver::
-make_egg_polygon() {
-  return new EggPolygon;
-}
-
-/**
- * A factory function to make a new EggPatch instance.
- */
-EggPrimitive *EggSaver::
-make_egg_patch() {
-  return new EggPatch;
-}
-
-/**
- * A factory function to make a new EggPoint instance.
- */
-EggPrimitive *EggSaver::
-make_egg_point() {
-  return new EggPoint;
-}
-
-/**
- * A factory function to make a new EggLine instance.
- */
-EggPrimitive *EggSaver::
-make_egg_line() {
-  return new EggLine;
 }
