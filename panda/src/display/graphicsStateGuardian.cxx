@@ -253,6 +253,9 @@ GraphicsStateGuardian(CoordinateSystem internal_coordinate_system,
   _supports_geometry_instancing = false;
   _supports_indirect_draw = false;
 
+  // We are safe assuming it has luminance support
+  _supports_luminance_texture = true;
+
   // Assume a maximum of 1 render target in absence of MRT.
   _max_color_targets = 1;
   _supports_dual_source_blending = false;
@@ -1684,8 +1687,11 @@ fetch_specified_member(const NodePath &np, CPT_InternalName attrib, LMatrix4 &t)
     t = get_external_transform()->get_mat() *
       get_scene()->get_camera_transform()->get_mat() *
       np.get_net_transform()->get_inverse()->get_mat() *
-      LMatrix4::convert_mat(_coordinate_system, lens->get_coordinate_system()) *
-      lens->get_projection_mat() * biasmat;
+      LMatrix4::convert_mat(_coordinate_system, lens->get_coordinate_system());
+
+    if (!node->is_of_type(PointLight::get_class_type())) {
+      t *= lens->get_projection_mat() * biasmat;
+    }
     return &t;
 
   } else {
