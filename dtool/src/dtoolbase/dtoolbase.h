@@ -58,18 +58,6 @@
 #pragma warning (disable : 4267)
 /* C4577: 'noexcept' used with no exception handling mode specified */
 #pragma warning (disable : 4577)
-
-#if _MSC_VER >= 1300
- #if _MSC_VER >= 1310
-   #define USING_MSVC7_1
-// #pragma message("VC 7.1")
- #else
-// #pragma message("VC 7.0")
- #endif
-#define USING_MSVC7
-#else
-// #pragma message("VC 6.0")
-#endif
 #endif  /* WIN32_VC */
 
 #ifndef __has_builtin
@@ -344,7 +332,7 @@ typedef struct _object PyObject;
 
 #ifdef __WORDSIZE
 #define NATIVE_WORDSIZE __WORDSIZE
-#elif defined(_LP64)
+#elif defined(_LP64) || defined(_WIN64)
 #define NATIVE_WORDSIZE 64
 #else
 #define NATIVE_WORDSIZE 32

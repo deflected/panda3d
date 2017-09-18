@@ -131,10 +131,10 @@ get_modified() const {
  */
 INLINE bool GeomVertexArrayData::
 request_resident(Thread *current_thread) const {
-#ifdef DO_PIPELINING
-  CPT(GeomVertexArrayData::CData) cdata = _cycler.read_unlocked(current_thread);
-#else
   const GeomVertexArrayData::CData *cdata = _cycler.read_unlocked(current_thread);
+
+#ifdef DO_PIPELINING
+  cdata->ref();
 #endif
 
   cdata->_rw_lock.acquire();
@@ -143,6 +143,11 @@ request_resident(Thread *current_thread) const {
   bool is_resident = (cdata->_buffer.get_read_pointer(false) != nullptr);
 
   cdata->_rw_lock.release();
+
+#ifdef DO_PIPELINING
+  unref_delete((CycleData *)cdata);
+#endif
+
   return is_resident;
 }
 
@@ -282,6 +287,31 @@ GeomVertexArrayDataHandle(CPT(GeomVertexArrayData) object,
  *
  */
 INLINE GeomVertexArrayDataHandle::
+GeomVertexArrayDataHandle(const GeomVertexArrayData *object,
+                          Thread *current_thread) :
+  _object((GeomVertexArrayData *)object),
+  _current_thread(current_thread),
+  _cdata((GeomVertexArrayData::CData *)object->_cycler.read_unlocked(current_thread)),
+  _writable(false)
+{
+#ifdef _DEBUG
+  nassertv(_object->test_ref_count_nonzero());
+#endif // _DEBUG
+#ifdef DO_PIPELINING
+  _cdata->ref();
+#endif  // DO_PIPELINING
+  // We must grab the lock *after* we have incremented the reference count,
+  // above.
+  _cdata->_rw_lock.acquire();
+#ifdef DO_MEMORY_USAGE
+  MemoryUsage::update_type(this, get_class_type());
+#endif
+}
+
+/**
+ *
+ */
+INLINE GeomVertexArrayDataHandle::
 GeomVertexArrayDataHandle(PT(GeomVertexArrayData) object,
                           Thread *current_thread) :
   _current_thread(current_thread),
@@ -290,6 +320,31 @@ GeomVertexArrayDataHandle(PT(GeomVertexArrayData) object,
 {
   _object.swap(object);
 
+#ifdef _DEBUG
+  nassertv(_object->test_ref_count_nonzero());
+#endif // _DEBUG
+#ifdef DO_PIPELINING
+  _cdata->ref();
+#endif  // DO_PIPELINING
+  // We must grab the lock *after* we have incremented the reference count,
+  // above.
+  _cdata->_rw_lock.acquire();
+#ifdef DO_MEMORY_USAGE
+  MemoryUsage::update_type(this, get_class_type());
+#endif
+}
+
+/**
+ *
+ */
+INLINE GeomVertexArrayDataHandle::
+GeomVertexArrayDataHandle(GeomVertexArrayData *object,
+                          Thread *current_thread) :
+  _object(object),
+  _current_thread(current_thread),
+  _cdata(object->_cycler.write_upstream(true, current_thread)),
+  _writable(true)
+{
 #ifdef _DEBUG
   nassertv(_object->test_ref_count_nonzero());
 #endif // _DEBUG

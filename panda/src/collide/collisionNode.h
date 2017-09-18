@@ -75,6 +75,7 @@ PUBLISHED:
   MAKE_PROPERTY(collider_sort, get_collider_sort, set_collider_sort);
 
   INLINE static CollideMask get_default_collide_mask();
+  MAKE_PROPERTY(default_collide_mask, get_default_collide_mask);
 
 protected:
   virtual void compute_internal_bounds(CPT(BoundingVolume) &internal_bounds,
@@ -92,6 +93,8 @@ private:
 
   typedef pvector< COWPT(CollisionSolid) > Solids;
   Solids _solids;
+
+  friend class CollisionTraverser;
 
 public:
   static void register_with_read_factory();

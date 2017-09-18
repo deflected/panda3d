@@ -76,7 +76,8 @@ MAYAVERSIONINFO = [("MAYA6",   "6.0"),
                    ("MAYA2014","2014"),
                    ("MAYA2015","2015"),
                    ("MAYA2016","2016"),
-                   ("MAYA20165","2016.5")
+                   ("MAYA20165","2016.5"),
+                   ("MAYA2017","2017")
 ]
 
 MAXVERSIONINFO = [("MAX6", "SOFTWARE\\Autodesk\\3DSMAX\\6.0", "installdir", "maxsdk\\cssdk\\include"),
@@ -396,13 +397,13 @@ def CrossCompiling():
     return GetTarget() != GetHost()
 
 def GetCC():
-    if TARGET == 'darwin':
+    if TARGET == 'darwin' or TARGET == 'freebsd':
         return os.environ.get('CC', TOOLCHAIN_PREFIX + 'clang')
     else:
         return os.environ.get('CC', TOOLCHAIN_PREFIX + 'gcc')
 
 def GetCXX():
-    if TARGET == 'darwin':
+    if TARGET == 'darwin' or TARGET == 'freebsd':
         return os.environ.get('CXX', TOOLCHAIN_PREFIX + 'clang++')
     else:
         return os.environ.get('CXX', TOOLCHAIN_PREFIX + 'g++')
@@ -2383,6 +2384,8 @@ def SetupVisualStudioEnviron():
     os.environ["VCINSTALLDIR"] = SDK["VISUALSTUDIO"] + "VC"
     os.environ["WindowsSdkDir"] = SDK["MSPLATFORM"]
 
+    winsdk_ver = SDK["MSPLATFORM_VERSION"]
+
     # Determine the directories to look in based on the architecture.
     arch = GetTargetArch()
     bindir = ""
@@ -2398,9 +2401,16 @@ def SetupVisualStudioEnviron():
         # Special version of the tools that run on x86.
         bindir = 'x86_' + bindir
 
-    binpath = SDK["VISUALSTUDIO"] + "VC\\bin\\" + bindir
-    if not os.path.isdir(binpath):
-        exit("Couldn't find compilers in %s.  You may need to install the Windows SDK 7.1 and the Visual C++ 2010 SP1 Compiler Update for Windows SDK 7.1." % binpath)
+    vc_binpath = SDK["VISUALSTUDIO"] + "VC\\bin"
+    binpath = os.path.join(vc_binpath, bindir)
+    if not os.path.isfile(binpath + "\\cl.exe"):
+        # Try the x86 tools, those should work just as well.
+        if arch == 'x64' and os.path.isfile(vc_binpath + "\\x86_amd64\\cl.exe"):
+            binpath = "{0}\\x86_amd64;{0}".format(vc_binpath)
+        elif winsdk_ver.startswith('10.'):
+            exit("Couldn't find compilers in %s.  You may need to install the Windows SDK 7.1 and the Visual C++ 2010 SP1 Compiler Update for Windows SDK 7.1." % binpath)
+        else:
+            exit("Couldn't find compilers in %s." % binpath)
 
     AddToPathEnv("PATH",    binpath)
     AddToPathEnv("PATH",    SDK["VISUALSTUDIO"] + "Common7\\IDE")
@@ -2412,6 +2422,7 @@ def SetupVisualStudioEnviron():
     winsdk_ver = SDK["MSPLATFORM_VERSION"]
     if winsdk_ver.startswith('10.'):
         AddToPathEnv("PATH",    SDK["MSPLATFORM"] + "bin\\" + arch)
+        AddToPathEnv("PATH",    SDK["MSPLATFORM"] + "bin\\" + winsdk_ver + "\\" + arch)
 
         # Windows Kit 10 introduces the "universal CRT".
         inc_dir = SDK["MSPLATFORM"] + "Include\\" + winsdk_ver + "\\"
@@ -2523,6 +2534,7 @@ def SetupBuildEnvironment(compiler):
     # Setting it to UTF-8 is necessary for Python 3 modules to import
     # correctly.
     os.environ["LC_ALL"] = "en_US.UTF-8"
+    os.environ["LANGUAGE"] = "en"
 
     if compiler == "MSVC":
         # Add the visual studio tools to PATH et al.
@@ -3146,11 +3158,29 @@ def TargetAdd(target, dummy=0, opts=[], input=[], dep=[], ipath=None, winrc=None
                 for d in CxxCalcDependencies(fullinput, ipath, []):
                     t.deps[d] = 1
 
+        # If we are linking statically, add the source DLL's dynamic dependencies.
+        if GetLinkAllStatic() and ORIG_EXT[fullinput] == '.lib' and fullinput in TARGET_TABLE:
+            tdep = TARGET_TABLE[fullinput]
+            for y in tdep.inputs:
+                if ORIG_EXT[y] == '.lib':
+                    t.inputs.append(y)
+
+            for opt, _ in LIBNAMES + LIBDIRECTORIES + FRAMEWORKDIRECTORIES:
+                if opt in tdep.opts and opt not in t.opts:
+                    t.opts.append(opt)
+
         if x.endswith(".in"):
             # Mark the _igate.cxx file as a dependency also.
             outbase = os.path.basename(x)[:-3]
             woutc = GetOutputDir()+"/tmp/"+outbase+"_igate.cxx"
             t.deps[woutc] = 1
+
+        if target.endswith(".in"):
+            # Add any .N files.
+            base, ext = os.path.splitext(fullinput)
+            fulln = base + ".N"
+            if os.path.isfile(fulln):
+                t.deps[fulln] = 1
 
     for x in dep:
         fulldep = FindLocation(x, ipath)

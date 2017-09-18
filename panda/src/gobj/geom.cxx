@@ -657,26 +657,71 @@ unify_in_place(int max_indices, bool preserve_order) {
     if (prim->get_num_vertices() > max_indices) {
       // Copy prim into smaller prims, no one of which has more than
       // max_indices vertices.
+      GeomPrimitivePipelineReader reader(prim, current_thread);
+
+      // Copy prim into smaller prims, no one of which has more than
+      // max_indices vertices.
       int i = 0;
+      int num_primitives = reader.get_num_primitives();
+      int num_vertices_per_primitive = prim->get_num_vertices_per_primitive();
+      int num_unused_vertices_per_primitive = prim->get_num_unused_vertices_per_primitive();
+      if (num_vertices_per_primitive != 0) {
+        // This is a simple primitive type like a triangle, where all the
+        // primitives share the same number of vertices.
+        int total_vertices_per_primitive = num_vertices_per_primitive + num_unused_vertices_per_primitive;
+        int max_primitives = max_indices / total_vertices_per_primitive;
+        const unsigned char *ptr = reader.get_read_pointer(true);
+        size_t stride = reader.get_index_stride();
 
-      while (i < prim->get_num_primitives()) {
-        PT(GeomPrimitive) smaller = prim->make_copy();
-        smaller->clear_vertices();
-        while (i < prim->get_num_primitives() &&
-               smaller->get_num_vertices() + prim->get_primitive_num_vertices(i) < max_indices) {
-          int start = prim->get_primitive_start(i);
-          int end = prim->get_primitive_end(i);
-          for (int n = start; n < end; ++n) {
-            smaller->add_vertex(prim->get_vertex(n));
+        while (i < num_primitives) {
+          PT(GeomPrimitive) smaller = prim->make_copy();
+          smaller->clear_vertices();
+
+          // Since the number of vertices is consistent, we can calculate how
+          // many primitives will fit, and copy them all in one go.
+          int copy_primitives = min((num_primitives - i), max_primitives);
+          int num_vertices = copy_primitives * total_vertices_per_primitive;
+          nassertv(num_vertices > 0);
+          {
+            smaller->set_index_type(reader.get_index_type());
+            GeomVertexArrayDataHandle writer(smaller->modify_vertices(), current_thread);
+            writer.unclean_set_num_rows(num_vertices);
+            memcpy(writer.get_write_pointer(), ptr, stride * (size_t)(num_vertices - num_unused_vertices_per_primitive));
           }
-          smaller->close_primitive();
 
-          ++i;
+          cdata->_primitives.push_back(smaller.p());
+
+          ptr += stride * (size_t)num_vertices;
+          i += copy_primitives;
         }
+      } else {
+        // This is a complex primitive type like a triangle strip.
+        CPTA_int ends = reader.get_ends();
+        int start = 0;
+        int end = ends[0];
 
-        cdata->_primitives.push_back(smaller.p());
+        while (i < num_primitives) {
+          PT(GeomPrimitive) smaller = prim->make_copy();
+          smaller->clear_vertices();
+
+          while (smaller->get_num_vertices() + (end - start) < max_indices) {
+            for (int n = start; n < end; ++n) {
+              smaller->add_vertex(reader.get_vertex(n));
+            }
+            smaller->close_primitive();
+
+            ++i;
+            if (i >= num_primitives) {
+              break;
+            }
+
+            start = end + num_unused_vertices_per_primitive;
+            end = ends[i];
+          }
+
+          cdata->_primitives.push_back(smaller.p());
+        }
       }
-
     } else {
       // The prim has few enough vertices; keep it.
       cdata->_primitives.push_back(prim);
@@ -925,7 +970,8 @@ bool Geom::
 check_valid() const {
   Thread *current_thread = Thread::get_current_thread();
   GeomPipelineReader geom_reader(this, current_thread);
-  GeomVertexDataPipelineReader data_reader(geom_reader.get_vertex_data(), current_thread);
+  CPT(GeomVertexData) vertex_data = geom_reader.get_vertex_data();
+  GeomVertexDataPipelineReader data_reader(vertex_data, current_thread);
   data_reader.check_array_readers();
   return geom_reader.check_valid(&data_reader);
 }
@@ -1166,14 +1212,13 @@ prepare_now(PreparedGraphicsObjects *prepared_objects,
  * is passed true, it will wait for the data to become resident if necessary.
  */
 bool Geom::
-draw(GraphicsStateGuardianBase *gsg, const GeomMunger *munger,
-     const GeomVertexData *vertex_data, bool force,
-     Thread *current_thread) const {
+draw(GraphicsStateGuardianBase *gsg, const GeomVertexData *vertex_data,
+     bool force, Thread *current_thread) const {
   GeomPipelineReader geom_reader(this, current_thread);
   GeomVertexDataPipelineReader data_reader(vertex_data, current_thread);
   data_reader.check_array_readers();
 
-  return geom_reader.draw(gsg, munger, &data_reader, force);
+  return geom_reader.draw(gsg, &data_reader, force);
 }
 
 /**
@@ -1218,6 +1263,9 @@ compute_internal_bounds(Geom::CData *cdata, Thread *current_thread) const {
   }
 
   if (found_any) {
+    nassertv(!pmin.is_nan());
+    nassertv(!pmax.is_nan());
+
     // Then we put the bounding volume around both of those points.
     PN_stdfloat avg_box_area;
     switch (btype) {
@@ -1701,10 +1749,10 @@ check_valid(const GeomVertexDataPipelineReader *data_reader) const {
  * The implementation of Geom::draw().
  */
 bool GeomPipelineReader::
-draw(GraphicsStateGuardianBase *gsg, const GeomMunger *munger,
+draw(GraphicsStateGuardianBase *gsg,
      const GeomVertexDataPipelineReader *data_reader, bool force) const {
   PStatTimer timer(Geom::_draw_primitive_setup_pcollector);
-  bool all_ok = gsg->begin_draw_primitives(this, munger, data_reader, force);
+  bool all_ok = gsg->begin_draw_primitives(this, data_reader, force);
   if (all_ok) {
     Geom::Primitives::const_iterator pi;
     for (pi = _cdata->_primitives.begin();

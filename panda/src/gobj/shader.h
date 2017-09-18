@@ -202,6 +202,17 @@ public:
     // Hack for text rendering.  Don't use in user shaders.
     SMO_tex_is_alpha_i,
 
+    SMO_transform_i,
+    SMO_slider_i,
+
+    SMO_light_source_i_packed,
+
+    // Texture scale component of texture matrix.
+    SMO_texscale_i,
+
+    // Color of an M_blend texture stage.
+    SMO_texcolor_i,
+
     SMO_INVALID
   };
 
@@ -287,7 +298,7 @@ public:
   enum ShaderStateDep {
     SSD_NONE          = 0x000,
     SSD_general       = 0x001,
-    SSD_transform     = 0x002,
+    SSD_transform    = 0x2002,
     SSD_color         = 0x004,
     SSD_colorscale    = 0x008,
     SSD_material      = 0x010,
@@ -299,6 +310,7 @@ public:
     SSD_frame         = 0x400,
     SSD_projection    = 0x800,
     SSD_texture      = 0x1000,
+    SSD_view_transform= 0x2000,
   };
 
   enum ShaderBug {

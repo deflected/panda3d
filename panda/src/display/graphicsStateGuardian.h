@@ -286,7 +286,7 @@ PUBLISHED:
   MAKE_PROPERTY(driver_shader_version_minor, get_driver_shader_version_minor);
 
   bool set_scene(SceneSetup *scene_setup);
-  virtual SceneSetup *get_scene() const;
+  virtual SceneSetup *get_scene() const FINAL;
   MAKE_PROPERTY(scene, get_scene, set_scene);
 
 public:
@@ -367,7 +367,6 @@ public:
   virtual void finish_decal();
 
   virtual bool begin_draw_primitives(const GeomPipelineReader *geom_reader,
-                                     const GeomMunger *munger,
                                      const GeomVertexDataPipelineReader *data_reader,
                                      bool force);
   virtual bool draw_triangles(const GeomPrimitivePipelineReader *reader,
@@ -424,6 +423,7 @@ public:
   static void create_gamma_table (PN_stdfloat gamma, unsigned short *red_table, unsigned short *green_table, unsigned short *blue_table);
 
   PT(Texture) get_shadow_map(const NodePath &light_np, GraphicsOutputBase *host=NULL);
+  PT(Texture) get_dummy_shadow_map(Texture::TextureType texture_type) const;
   PT(Texture) make_shadow_buffer(const NodePath &light_np, GraphicsOutputBase *host);
 
 #ifdef DO_PSTATS
@@ -495,9 +495,8 @@ protected:
   CPT(ShaderAttrib) _state_shader;
   CPT(ShaderAttrib) _target_shader;
 
-  // These are set by begin_draw_primitives(), and are only valid between
+  // This is set by begin_draw_primitives(), and are only valid between
   // begin_draw_primitives() and end_draw_primitives().
-  CPT(GeomMunger) _munger;
   const GeomVertexDataPipelineReader *_data_reader;
 
   unsigned int _color_write_mask;
